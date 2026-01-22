@@ -42,7 +42,7 @@ jobs:
       - name: Inject Configuration
         shell: bash
         run: |
-          npm pkg set build.releaseInfo.releaseNotes="修复了一些已知问题"
+          npm pkg set build.releaseInfo.releaseNotes=$'仅适配微信 4.0 及以上版本\n\n修复了一些已知问题\n\n详情前往 Telegram 群查看'
 
       - name: Package and Publish
         env:
