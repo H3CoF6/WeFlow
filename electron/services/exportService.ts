@@ -72,8 +72,20 @@ export interface ExportOptions {
   exportEmojis?: boolean
   exportVoiceAsText?: boolean
   excelCompactColumns?: boolean
+  txtColumns?: string[]
   sessionLayout?: 'shared' | 'per-session'
 }
+
+const TXT_COLUMN_DEFINITIONS: Array<{ id: string; label: string }> = [
+  { id: 'index', label: '序号' },
+  { id: 'time', label: '时间' },
+  { id: 'senderRole', label: '发送者身份' },
+  { id: 'messageType', label: '消息类型' },
+  { id: 'content', label: '内容' },
+  { id: 'senderNickname', label: '发送者昵称' },
+  { id: 'senderWxid', label: '发送者微信ID' },
+  { id: 'senderRemark', label: '发送者备注' }
+]
 
 interface MediaExportItem {
   relativePath: string
@@ -426,6 +438,17 @@ class ExportService {
     const minutes = String(date.getMinutes()).padStart(2, '0')
     const seconds = String(date.getSeconds()).padStart(2, '0')
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+  }
+
+  private normalizeTxtColumns(columns?: string[] | null): string[] {
+    const fallback = ['index', 'time', 'senderRole', 'messageType', 'content']
+    const selected = new Set((columns && columns.length > 0 ? columns : fallback).filter(Boolean))
+    const ordered = TXT_COLUMN_DEFINITIONS.map((col) => col.id).filter((id) => selected.has(id))
+    return ordered.length > 0 ? ordered : fallback
+  }
+
+  private sanitizeTxtValue(value: string): string {
+    return value.replace(/\r?\n/g, ' ').replace(/\t/g, ' ').trim()
   }
 
   /**
@@ -1881,6 +1904,197 @@ class ExportService {
   }
 
   /**
+   * 导出单个会话为 TXT 格式（默认与 Excel 精简列一致）
+   */
+  async exportSessionToTxt(
+    sessionId: string,
+    outputPath: string,
+    options: ExportOptions,
+    onProgress?: (progress: ExportProgress) => void
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const conn = await this.ensureConnected()
+      if (!conn.success || !conn.cleanedWxid) return { success: false, error: conn.error }
+
+      const cleanedMyWxid = conn.cleanedWxid
+      const isGroup = sessionId.includes('@chatroom')
+      const sessionInfo = await this.getContactInfo(sessionId)
+      const myInfo = await this.getContactInfo(cleanedMyWxid)
+
+      onProgress?.({
+        current: 0,
+        total: 100,
+        currentSession: sessionInfo.displayName,
+        phase: 'preparing'
+      })
+
+      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
+      const sortedMessages = collected.rows.sort((a, b) => a.createTime - b.createTime)
+
+      const { exportMediaEnabled, mediaRootDir, mediaRelativePrefix } = this.getMediaLayout(outputPath, options)
+      const mediaMessages = exportMediaEnabled
+        ? sortedMessages.filter(msg => {
+            const t = msg.localType
+            return (t === 3 && options.exportImages) ||
+                   (t === 47 && options.exportEmojis) ||
+                   (t === 34 && options.exportVoices && !options.exportVoiceAsText)
+          })
+        : []
+
+      const mediaCache = new Map<string, MediaExportItem | null>()
+
+      if (mediaMessages.length > 0) {
+        onProgress?.({
+          current: 25,
+          total: 100,
+          currentSession: sessionInfo.displayName,
+          phase: 'exporting-media'
+        })
+
+        const MEDIA_CONCURRENCY = 8
+        await parallelLimit(mediaMessages, MEDIA_CONCURRENCY, async (msg) => {
+          const mediaKey = `${msg.localType}_${msg.localId}`
+          if (!mediaCache.has(mediaKey)) {
+            const mediaItem = await this.exportMediaForMessage(msg, sessionId, mediaRootDir, mediaRelativePrefix, {
+              exportImages: options.exportImages,
+              exportVoices: options.exportVoices,
+              exportEmojis: options.exportEmojis,
+              exportVoiceAsText: options.exportVoiceAsText
+            })
+            mediaCache.set(mediaKey, mediaItem)
+          }
+        })
+      }
+
+      const voiceMessages = options.exportVoiceAsText
+        ? sortedMessages.filter(msg => msg.localType === 34)
+        : []
+      const voiceTranscriptMap = new Map<number, string>()
+
+      if (voiceMessages.length > 0) {
+        onProgress?.({
+          current: 45,
+          total: 100,
+          currentSession: sessionInfo.displayName,
+          phase: 'exporting-voice'
+        })
+
+        const VOICE_CONCURRENCY = 4
+        await parallelLimit(voiceMessages, VOICE_CONCURRENCY, async (msg) => {
+          const transcript = await this.transcribeVoice(sessionId, String(msg.localId))
+          voiceTranscriptMap.set(msg.localId, transcript)
+        })
+      }
+
+      onProgress?.({
+        current: 60,
+        total: 100,
+        currentSession: sessionInfo.displayName,
+        phase: 'exporting'
+      })
+
+      const columnOrder = this.normalizeTxtColumns(options.txtColumns)
+      const columnLabelMap = new Map(TXT_COLUMN_DEFINITIONS.map((col) => [col.id, col.label]))
+      const lines: string[] = []
+      lines.push(columnOrder.map((id) => columnLabelMap.get(id) || id).join('\t'))
+
+      for (let i = 0; i < sortedMessages.length; i++) {
+        const msg = sortedMessages[i]
+        const mediaKey = `${msg.localType}_${msg.localId}`
+        const mediaItem = mediaCache.get(mediaKey) || null
+
+        let contentValue: string
+        if (mediaItem) {
+          contentValue = mediaItem.relativePath
+        } else if (msg.localType === 34 && options.exportVoiceAsText) {
+          contentValue = voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]'
+        } else {
+          contentValue = this.parseMessageContent(msg.content, msg.localType) || ''
+        }
+
+        let senderRole: string
+        let senderWxid: string
+        let senderNickname: string
+        let senderRemark = ''
+
+        if (msg.isSend) {
+          senderRole = '我'
+          senderWxid = cleanedMyWxid
+          senderNickname = myInfo.displayName || cleanedMyWxid
+        } else if (isGroup && msg.senderUsername) {
+          senderWxid = msg.senderUsername
+          const contactDetail = await wcdbService.getContact(msg.senderUsername)
+          if (contactDetail.success && contactDetail.contact) {
+            senderNickname = contactDetail.contact.nickName || msg.senderUsername
+            senderRemark = contactDetail.contact.remark || ''
+            senderRole = senderRemark || senderNickname
+          } else {
+            senderNickname = msg.senderUsername
+            senderRole = msg.senderUsername
+          }
+        } else {
+          senderWxid = sessionId
+          const contactDetail = await wcdbService.getContact(sessionId)
+          if (contactDetail.success && contactDetail.contact) {
+            senderNickname = contactDetail.contact.nickName || sessionId
+            senderRemark = contactDetail.contact.remark || ''
+            senderRole = senderRemark || senderNickname
+          } else {
+            senderNickname = sessionInfo.displayName || sessionId
+            senderRole = senderNickname
+          }
+        }
+
+        const values: Record<string, string> = {
+          index: String(i + 1),
+          time: this.formatTimestamp(msg.createTime),
+          senderRole,
+          senderNickname,
+          senderWxid,
+          senderRemark,
+          messageType: this.getMessageTypeName(msg.localType),
+          content: contentValue
+        }
+
+        const line = columnOrder
+          .map((id) => this.sanitizeTxtValue(values[id] ?? ''))
+          .join('\t')
+        lines.push(line)
+
+        if ((i + 1) % 200 === 0) {
+          const progress = 60 + Math.floor((i + 1) / sortedMessages.length * 30)
+          onProgress?.({
+            current: progress,
+            total: 100,
+            currentSession: sessionInfo.displayName,
+            phase: 'exporting'
+          })
+        }
+      }
+
+      onProgress?.({
+        current: 92,
+        total: 100,
+        currentSession: sessionInfo.displayName,
+        phase: 'writing'
+      })
+
+      fs.writeFileSync(outputPath, lines.join('\n'), 'utf-8')
+
+      onProgress?.({
+        current: 100,
+        total: 100,
+        currentSession: sessionInfo.displayName,
+        phase: 'complete'
+      })
+
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  /**
    * 批量导出多个会话
    */
   async exportSessions(
@@ -1930,6 +2144,7 @@ class ExportService {
         let ext = '.json'
         if (options.format === 'chatlab-jsonl') ext = '.jsonl'
         else if (options.format === 'excel') ext = '.xlsx'
+        else if (options.format === 'txt') ext = '.txt'
         const outputPath = path.join(sessionDir, `${safeName}${ext}`)
 
         let result: { success: boolean; error?: string }
@@ -1939,6 +2154,8 @@ class ExportService {
           result = await this.exportSessionToChatLab(sessionId, outputPath, options)
         } else if (options.format === 'excel') {
           result = await this.exportSessionToExcel(sessionId, outputPath, options)
+        } else if (options.format === 'txt') {
+          result = await this.exportSessionToTxt(sessionId, outputPath, options)
         } else {
           result = { success: false, error: `不支持的格式: ${options.format}` }
         }

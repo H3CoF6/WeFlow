@@ -351,6 +351,7 @@ export interface ExportOptions {
   exportEmojis?: boolean
   exportVoiceAsText?: boolean
   excelCompactColumns?: boolean
+  txtColumns?: string[]
   sessionLayout?: 'shared' | 'per-session'
 }
 
