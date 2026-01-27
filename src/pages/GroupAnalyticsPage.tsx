@@ -56,7 +56,7 @@ function GroupAnalyticsPage() {
 
   useEffect(() => {
     loadGroups()
-  }, [loadGroups])
+  }, [])
 
   useEffect(() => {
     if (searchQuery) {
