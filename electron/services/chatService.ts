@@ -2227,7 +2227,9 @@ class ChatService {
       if (raw.length === 0) return ''
 
       // 检查是否是 hex 编码
-      if (this.looksLikeHex(raw)) {
+      // 只有当字符串足够长（超过16字符）且看起来像 hex 时才尝试解码
+      // 短字符串（如 "123456" 等纯数字）容易被误判为 hex
+      if (raw.length > 16 && this.looksLikeHex(raw)) {
         const bytes = Buffer.from(raw, 'hex')
         if (bytes.length > 0) {
           const result = this.decodeBinaryContent(bytes, raw)
@@ -2237,7 +2239,9 @@ class ChatService {
       }
 
       // 检查是否是 base64 编码
-      if (this.looksLikeBase64(raw)) {
+      // 只有当字符串足够长（超过16字符）且看起来像 base64 时才尝试解码
+      // 短字符串（如 "test", "home" 等）容易被误判为 base64
+      if (raw.length > 16 && this.looksLikeBase64(raw)) {
         try {
           const bytes = Buffer.from(raw, 'base64')
           return this.decodeBinaryContent(bytes, raw)

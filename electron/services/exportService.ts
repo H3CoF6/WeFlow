@@ -270,11 +270,14 @@ class ExportService {
       if (/^[0-9]+$/.test(raw)) {
         return raw
       }
-      if (this.looksLikeHex(raw)) {
+      // 只有当字符串足够长（超过16字符）且看起来像 hex 时才尝试解码
+      if (raw.length > 16 && this.looksLikeHex(raw)) {
         const bytes = Buffer.from(raw, 'hex')
         if (bytes.length > 0) return this.decodeBinaryContent(bytes)
       }
-      if (this.looksLikeBase64(raw)) {
+      // 只有当字符串足够长（超过16字符）且看起来像 base64 时才尝试解码
+      // 短字符串（如 "test", "home" 等）容易被误判为 base64
+      if (raw.length > 16 && this.looksLikeBase64(raw)) {
         try {
           const bytes = Buffer.from(raw, 'base64')
           return this.decodeBinaryContent(bytes)
@@ -585,6 +588,47 @@ class ExportService {
 
   private stripSenderPrefix(content: string): string {
     return content.replace(/^[\s]*([a-zA-Z0-9_-]+):(?!\/\/)/, '')
+  }
+
+  /**
+   * 从撤回消息内容中提取撤回者的 wxid
+   * 撤回消息 XML 格式通常包含 <session> 或 <newmsgid> 等字段
+   * 以及撤回者的 wxid 在某些字段中
+   * @returns { isRevoke: true, isSelfRevoke: true } - 是自己撤回的消息
+   * @returns { isRevoke: true, revokerWxid: string } - 是别人撤回的消息，提取到撤回者
+   * @returns { isRevoke: false } - 不是撤回消息
+   */
+  private extractRevokerInfo(content: string): { isRevoke: boolean; isSelfRevoke?: boolean; revokerWxid?: string } {
+    if (!content) return { isRevoke: false }
+    
+    // 检查是否是撤回消息
+    if (!content.includes('revokemsg') && !content.includes('撤回')) {
+      return { isRevoke: false }
+    }
+    
+    // 检查是否是 "你撤回了" - 自己撤回
+    if (content.includes('你撤回')) {
+      return { isRevoke: true, isSelfRevoke: true }
+    }
+    
+    // 尝试从 <session> 标签提取（格式: wxid_xxx）
+    const sessionMatch = /<session>([^<]+)<\/session>/i.exec(content)
+    if (sessionMatch) {
+      const session = sessionMatch[1].trim()
+      // 如果 session 是 wxid 格式，返回它
+      if (session.startsWith('wxid_') || /^[a-zA-Z][a-zA-Z0-9_-]+$/.test(session)) {
+        return { isRevoke: true, revokerWxid: session }
+      }
+    }
+    
+    // 尝试从 <fromusername> 提取
+    const fromUserMatch = /<fromusername>([^<]+)<\/fromusername>/i.exec(content)
+    if (fromUserMatch) {
+      return { isRevoke: true, revokerWxid: fromUserMatch[1].trim() }
+    }
+    
+    // 是撤回消息但无法提取撤回者
+    return { isRevoke: true }
   }
 
   private extractXmlValue(xml: string, tagName: string): string {
@@ -1405,7 +1449,30 @@ class ExportService {
           const isSend = parseInt(isSendRaw, 10) === 1
           const localId = parseInt(row.local_id || row.localId || '0', 10)
 
-          const actualSender = isSend ? cleanedMyWxid : (senderUsername || sessionId)
+          // 确定实际发送者
+          let actualSender: string
+          if (localType === 10000 || localType === 266287972401) {
+            // 系统消息特殊处理
+            const revokeInfo = this.extractRevokerInfo(content)
+            if (revokeInfo.isRevoke) {
+              // 撤回消息
+              if (revokeInfo.isSelfRevoke) {
+                // "你撤回了" - 发送者是当前用户
+                actualSender = cleanedMyWxid
+              } else if (revokeInfo.revokerWxid) {
+                // 提取到了撤回者的 wxid
+                actualSender = revokeInfo.revokerWxid
+              } else {
+                // 无法确定撤回者，使用 sessionId
+                actualSender = sessionId
+              }
+            } else {
+              // 普通系统消息（如"xxx加入群聊"），发送者是群聊ID
+              actualSender = sessionId
+            }
+          } else {
+            actualSender = isSend ? cleanedMyWxid : (senderUsername || sessionId)
+          }
           senderSet.add(actualSender)
 
           // 提取媒体相关字段
@@ -1849,6 +1916,24 @@ class ExportService {
         await this.mergeGroupMembers(sessionId, collected.memberSet, options.exportAvatars === true)
       }
 
+      // ========== 获取群昵称并更新到 memberSet ==========
+      const groupNicknamesMap = isGroup
+        ? await this.getGroupNicknamesForRoom(sessionId)
+        : new Map<string, string>()
+
+      // 将群昵称更新到 memberSet 中
+      if (isGroup && groupNicknamesMap.size > 0) {
+        for (const [username, info] of collected.memberSet) {
+          // 尝试多种方式查找群昵称（支持大小写）
+          const groupNickname = groupNicknamesMap.get(username) 
+            || groupNicknamesMap.get(username.toLowerCase())
+            || ''
+          if (groupNickname) {
+            info.member.groupNickname = groupNickname
+          }
+        }
+      }
+
       allMessages.sort((a, b) => a.createTime - b.createTime)
 
       const { exportMediaEnabled, mediaRootDir, mediaRelativePrefix } = this.getMediaLayout(outputPath, options)
@@ -1925,6 +2010,11 @@ class ExportService {
           groupNickname: undefined
         }
 
+        // 如果 memberInfo 中没有群昵称，尝试从 groupNicknamesMap 获取
+        const groupNickname = memberInfo.groupNickname 
+          || (isGroup ? (groupNicknamesMap.get(msg.senderUsername) || groupNicknamesMap.get(msg.senderUsername?.toLowerCase()) || '') : '')
+          || ''
+
         // 确定消息内容
         let content: string | null
         if (msg.localType === 34 && options.exportVoiceAsText) {
@@ -1937,7 +2027,7 @@ class ExportService {
         const message: ChatLabMessage = {
           sender: msg.senderUsername,
           accountName: memberInfo.accountName,
-          groupNickname: memberInfo.groupNickname,
+          groupNickname: groupNickname || undefined,
           timestamp: msg.createTime,
           type: this.convertMessageType(msg.localType, msg.content),
           content: content

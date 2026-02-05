@@ -81,6 +81,11 @@ export function GlobalSessionMonitor() {
     }
 
     const checkForNewMessages = async (oldSessions: ChatSession[], newSessions: ChatSession[]) => {
+        if (!oldSessions || oldSessions.length === 0) {
+            console.log('[NotificationFilter] Skipping check on initial load (empty baseline)')
+            return
+        }
+
         const oldMap = new Map(oldSessions.map(s => [s.username, s]))
 
         for (const newSession of newSessions) {
@@ -138,6 +143,14 @@ export function GlobalSessionMonitor() {
                             console.log('[NotificationFilter] Missing info:', missingInfo);
                         }
                     }
+                }
+
+                // 新增：如果未读数量没有增加，说明可能是自己在其他设备回复（或者已读），不弹通知
+                const oldUnread = oldSession ? oldSession.unreadCount : 0
+                const newUnread = newSession.unreadCount
+                if (newUnread <= oldUnread) {
+                    // 仅仅是状态同步（如自己在手机上发消息 or 已读），跳过通知
+                    continue
                 }
 
                 let title = newSession.displayName || newSession.username

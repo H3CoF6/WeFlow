@@ -9,12 +9,12 @@ import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon,
   Palette, Database, Download, HardDrive, Info, RefreshCw, ChevronDown, Mic,
-  ShieldCheck, Fingerprint, Lock, KeyRound, Bell
+  ShieldCheck, Fingerprint, Lock, KeyRound, Bell, Globe
 } from 'lucide-react'
 import { Avatar } from '../components/Avatar'
 import './SettingsPage.scss'
 
-type SettingsTab = 'appearance' | 'notification' | 'database' | 'models' | 'export' | 'cache' | 'security' | 'about'
+type SettingsTab = 'appearance' | 'notification' | 'database' | 'models' | 'export' | 'cache' | 'api' | 'security' | 'about'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
@@ -23,6 +23,7 @@ const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'models', label: '模型管理', icon: Mic },
   { id: 'export', label: '导出', icon: Download },
   { id: 'cache', label: '缓存', icon: HardDrive },
+  { id: 'api', label: 'API 服务', icon: Globe },
   { id: 'security', label: '安全', icon: ShieldCheck },
   { id: 'about', label: '关于', icon: Info }
 ]
@@ -137,6 +138,13 @@ function SettingsPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [isSettingHello, setIsSettingHello] = useState(false)
 
+  // HTTP API 设置 state
+  const [httpApiEnabled, setHttpApiEnabled] = useState(false)
+  const [httpApiPort, setHttpApiPort] = useState(5031)
+  const [httpApiRunning, setHttpApiRunning] = useState(false)
+  const [isTogglingApi, setIsTogglingApi] = useState(false)
+  const [showApiWarning, setShowApiWarning] = useState(false)
+
   const isClearingCache = isClearingAnalyticsCache || isClearingImageCache || isClearingAllCache
 
   // 检查 Hello 可用性
@@ -144,6 +152,22 @@ function SettingsPage() {
     if (window.PublicKeyCredential) {
       void PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(setHelloAvailable)
     }
+  }, [])
+
+  // 检查 HTTP API 服务状态
+  useEffect(() => {
+    const checkApiStatus = async () => {
+      try {
+        const status = await window.electronAPI.http.status()
+        setHttpApiRunning(status.running)
+        if (status.port) {
+          setHttpApiPort(status.port)
+        }
+      } catch (e) {
+        console.error('检查 API 状态失败:', e)
+      }
+    }
+    checkApiStatus()
   }, [])
 
   async function sha256(message: string) {
@@ -1835,6 +1859,147 @@ function SettingsPage() {
     </div>
   )
 
+  // HTTP API 服务控制
+  const handleToggleApi = async () => {
+    if (isTogglingApi) return
+    
+    // 启动时显示警告弹窗
+    if (!httpApiRunning) {
+      setShowApiWarning(true)
+      return
+    }
+    
+    setIsTogglingApi(true)
+    try {
+      await window.electronAPI.http.stop()
+      setHttpApiRunning(false)
+      showMessage('API 服务已停止', true)
+    } catch (e: any) {
+      showMessage(`操作失败: ${e}`, false)
+    } finally {
+      setIsTogglingApi(false)
+    }
+  }
+
+  // 确认启动 API 服务
+  const confirmStartApi = async () => {
+    setShowApiWarning(false)
+    setIsTogglingApi(true)
+    try {
+      const result = await window.electronAPI.http.start(httpApiPort)
+      if (result.success) {
+        setHttpApiRunning(true)
+        if (result.port) setHttpApiPort(result.port)
+        showMessage(`API 服务已启动，端口 ${result.port}`, true)
+      } else {
+        showMessage(`启动失败: ${result.error}`, false)
+      }
+    } catch (e: any) {
+      showMessage(`操作失败: ${e}`, false)
+    } finally {
+      setIsTogglingApi(false)
+    }
+  }
+
+  const handleCopyApiUrl = () => {
+    const url = `http://127.0.0.1:${httpApiPort}`
+    navigator.clipboard.writeText(url)
+    showMessage('已复制 API 地址', true)
+  }
+
+  const renderApiTab = () => (
+    <div className="tab-content">
+      <div className="form-group">
+        <label>HTTP API 服务</label>
+        <span className="form-hint">启用后可通过 HTTP 接口查询消息数据（仅限本机访问）</span>
+        <div className="log-toggle-line">
+          <span className="log-status">
+            {httpApiRunning ? '运行中' : '已停止'}
+          </span>
+          <label className="switch">
+            <input
+              type="checkbox"
+              checked={httpApiRunning}
+              onChange={handleToggleApi}
+              disabled={isTogglingApi}
+            />
+            <span className="switch-slider" />
+          </label>
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label>服务端口</label>
+        <span className="form-hint">API 服务监听的端口号（1024-65535）</span>
+        <input
+          type="number"
+          className="field-input"
+          value={httpApiPort}
+          onChange={(e) => setHttpApiPort(parseInt(e.target.value, 10) || 5031)}
+          disabled={httpApiRunning}
+          style={{ width: 120 }}
+          min={1024}
+          max={65535}
+        />
+      </div>
+
+      {httpApiRunning && (
+        <div className="form-group">
+          <label>API 地址</label>
+          <span className="form-hint">使用以下地址访问 API</span>
+          <div className="api-url-display">
+            <input
+              type="text"
+              className="field-input"
+              value={`http://127.0.0.1:${httpApiPort}`}
+              readOnly
+            />
+            <button className="btn btn-secondary" onClick={handleCopyApiUrl} title="复制">
+              <Copy size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* API 安全警告弹窗 */}
+      {showApiWarning && (
+        <div className="modal-overlay" onClick={() => setShowApiWarning(false)}>
+          <div className="api-warning-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <ShieldCheck size={20} />
+              <h3>安全提示</h3>
+            </div>
+            <div className="modal-body">
+              <p className="warning-text">启用 HTTP API 服务后，本机上的其他程序可通过接口访问您的聊天记录数据。</p>
+              <div className="warning-list">
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>请确保您了解此功能的用途</span>
+                </div>
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>不要在公共或不信任的网络环境下使用</span>
+                </div>
+                <div className="warning-item">
+                  <span className="bullet">•</span>
+                  <span>此功能仅供高级用户或开发者使用</span>
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowApiWarning(false)}>
+                取消
+              </button>
+              <button className="btn btn-primary" onClick={confirmStartApi}>
+                确认启动
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
   const handleSetupHello = async () => {
     setIsSettingHello(true)
     try {
@@ -2075,6 +2240,7 @@ function SettingsPage() {
         {activeTab === 'models' && renderModelsTab()}
         {activeTab === 'export' && renderExportTab()}
         {activeTab === 'cache' && renderCacheTab()}
+        {activeTab === 'api' && renderApiTab()}
         {activeTab === 'security' && renderSecurityTab()}
         {activeTab === 'about' && renderAboutTab()}
       </div>
