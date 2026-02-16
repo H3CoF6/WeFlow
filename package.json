@@ -10,7 +10,7 @@
   },
   "//": "二改不应改变此处的作者与应用信息",
   "scripts": {
-    "postinstall": "echo 'No native modules to rebuild'",
+    "postinstall": "electron-builder install-app-deps",
     "rebuild": "electron-rebuild",
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
@@ -107,6 +107,10 @@
       {
         "from": "public/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "electron/assets/wasm/",
+        "to": "assets/wasm/"
       }
     ],
     "files": [

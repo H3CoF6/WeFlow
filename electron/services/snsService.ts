@@ -1,4 +1,4 @@
-﻿import { wcdbService } from './wcdbService'
+import { wcdbService } from './wcdbService'
 import { ConfigService } from './config'
 import { ContactCacheService } from './contactCacheService'
 import { existsSync, mkdirSync } from 'fs'
@@ -335,9 +335,19 @@ class SnsService {
                                 if (key && String(key).trim().length > 0) {
                                     try {
                                         console.log(`[SnsService] 使用 WASM Isaac64 解密视频... Key: ${key}`)
-                                        const wasmService = WasmService.getInstance()
-                                        // 只需要前 128KB (131072 bytes) 用于解密头部
-                                        const keystream = await wasmService.getKeystream(String(key), 131072)
+                                        const keyText = String(key).trim()
+                                        let keystream: Buffer
+
+                                        try {
+                                            const wasmService = WasmService.getInstance()
+                                            // 只需要前 128KB (131072 bytes) 用于解密头部
+                                            keystream = await wasmService.getKeystream(keyText, 131072)
+                                        } catch (wasmErr) {
+                                            // 打包漏带 wasm 或 wasm 初始化异常时，回退到纯 TS ISAAC64
+                                            console.warn(`[SnsService] WASM 解密不可用，回退 Isaac64: ${wasmErr}`)
+                                            const isaac = new Isaac64(keyText)
+                                            keystream = isaac.generateKeystream(131072)
+                                        }
 
                                         const decryptLen = Math.min(keystream.length, raw.length)
 
