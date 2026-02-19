@@ -108,6 +108,7 @@ function AnalyticsPage() {
   }, [loadExcludedUsernames])
 
   const handleRefresh = () => loadData(true)
+  const isNoSessionError = error?.includes('未找到消息会话') ?? false
 
   const loadExcludeCandidates = useCallback(async () => {
     setExcludeLoading(true)
@@ -172,6 +173,23 @@ function AnalyticsPage() {
       await loadData(true)
     } catch (e) {
       alert(`更新排除名单失败：${String(e)}`)
+    }
+  }
+
+  const handleResetExcluded = async () => {
+    try {
+      const result = await window.electronAPI.analytics.setExcludedUsernames([])
+      if (!result.success) {
+        setError(result.error || '重置排除好友失败')
+        return
+      }
+      setExcludedUsernames(new Set())
+      setDraftExcluded(new Set())
+      clearCache()
+      await window.electronAPI.cache.clearAnalytics()
+      await loadData(true)
+    } catch (e) {
+      setError(`重置排除好友失败: ${String(e)}`)
     }
   }
 
@@ -351,6 +369,22 @@ function AnalyticsPage() {
           <div className="progress-bar-fill" style={{ width: `${progress}%` }}></div>
         </div>
         <span className="progress-percent">{progress}%</span>
+      </div>
+    )
+  }
+
+  if (error && !isLoaded && isNoSessionError && excludedUsernames.size > 0) {
+    return (
+      <div className="error-container">
+        <p>{error}</p>
+        <div className="error-actions">
+          <button className="btn btn-secondary" onClick={handleResetExcluded}>
+            重置排除好友
+          </button>
+          <button className="btn btn-primary" onClick={() => loadData(true)}>
+            重试
+          </button>
+        </div>
       </div>
     )
   }

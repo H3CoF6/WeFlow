@@ -70,6 +70,8 @@ const MESSAGE_TYPE_MAP: Record<number, number> = {
 export interface ExportOptions {
   format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
   dateRange?: { start: number; end: number } | null
+  senderUsername?: string
+  fileNameSuffix?: string
   exportMedia?: boolean
   exportAvatars?: boolean
   exportImages?: boolean
@@ -534,11 +536,14 @@ class ExportService {
     groupNicknamesMap: Map<string, string>,
     getContactName: (username: string) => Promise<string>
   ): Promise<string | null> {
-    const xmlType = this.extractXmlValue(content, 'type')
-    if (xmlType !== '2000') return null
+    const normalizedContent = this.normalizeAppMessageContent(content || '')
+    if (!normalizedContent) return null
 
-    const payerUsername = this.extractXmlValue(content, 'payer_username')
-    const receiverUsername = this.extractXmlValue(content, 'receiver_username')
+    const xmlType = this.extractXmlValue(normalizedContent, 'type')
+    if (xmlType && xmlType !== '2000') return null
+
+    const payerUsername = this.extractXmlValue(normalizedContent, 'payer_username')
+    const receiverUsername = this.extractXmlValue(normalizedContent, 'receiver_username')
     if (!payerUsername || !receiverUsername) return null
 
     const cleanedMyWxid = myWxid ? this.cleanAccountDirName(myWxid) : ''
@@ -565,6 +570,52 @@ class ExportService {
     return `${payerName} 转账给 ${receiverName}`
   }
 
+  private isSameWxid(lhs?: string, rhs?: string): boolean {
+    const left = new Set(this.buildGroupNicknameIdCandidates([lhs]).map((id) => id.toLowerCase()))
+    if (left.size === 0) return false
+    const right = this.buildGroupNicknameIdCandidates([rhs]).map((id) => id.toLowerCase())
+    return right.some((id) => left.has(id))
+  }
+
+  private getTransferPrefix(content: string, myWxid?: string, senderWxid?: string, isSend?: boolean): '[转账]' | '[转账收款]' {
+    const normalizedContent = this.normalizeAppMessageContent(content || '')
+    if (!normalizedContent) return '[转账]'
+
+    const paySubtype = this.extractXmlValue(normalizedContent, 'paysubtype')
+    // 转账消息在部分账号数据中 `payer_username` 可能为空，优先用 `paysubtype` 判定
+    // 实测：1=发起侧，3=收款侧
+    if (paySubtype === '3') return '[转账收款]'
+    if (paySubtype === '1') return '[转账]'
+
+    const payerUsername = this.extractXmlValue(normalizedContent, 'payer_username')
+    const receiverUsername = this.extractXmlValue(normalizedContent, 'receiver_username')
+    const senderIsPayer = senderWxid ? this.isSameWxid(senderWxid, payerUsername) : false
+    const senderIsReceiver = senderWxid ? this.isSameWxid(senderWxid, receiverUsername) : false
+
+    // 实测字段语义：sender 命中 receiver_username 为转账发起侧，命中 payer_username 为收款侧
+    if (senderWxid) {
+      if (senderIsReceiver && !senderIsPayer) return '[转账]'
+      if (senderIsPayer && !senderIsReceiver) return '[转账收款]'
+    }
+
+    // 兜底：按当前账号角色判断
+    if (myWxid) {
+      if (this.isSameWxid(myWxid, receiverUsername)) return '[转账]'
+      if (this.isSameWxid(myWxid, payerUsername)) return '[转账收款]'
+    }
+
+    return '[转账]'
+  }
+
+  private isTransferExportContent(content: string): boolean {
+    return content.startsWith('[转账]') || content.startsWith('[转账收款]')
+  }
+
+  private appendTransferDesc(content: string, transferDesc: string): string {
+    const prefix = content.startsWith('[转账收款]') ? '[转账收款]' : '[转账]'
+    return content.replace(prefix, `${prefix} (${transferDesc})`)
+  }
+
   private looksLikeBase64(s: string): boolean {
     if (s.length % 4 !== 0) return false
     return /^[A-Za-z0-9+/=]+$/.test(s)
@@ -574,7 +625,15 @@ class ExportService {
    * 解析消息内容为可读文本
    * 注意：语音消息在这里返回占位符，实际转文字在导出时异步处理
    */
-  private parseMessageContent(content: string, localType: number, sessionId?: string, createTime?: number): string | null {
+  private parseMessageContent(
+    content: string,
+    localType: number,
+    sessionId?: string,
+    createTime?: number,
+    myWxid?: string,
+    senderWxid?: string,
+    isSend?: boolean
+  ): string | null {
     if (!content) return null
 
     // 检查 XML 中的 type 标签（支持大 localType 的情况）
@@ -611,10 +670,11 @@ class ExportService {
         if (type === '2000') {
           const feedesc = this.extractXmlValue(content, 'feedesc')
           const payMemo = this.extractXmlValue(content, 'pay_memo')
+          const transferPrefix = this.getTransferPrefix(content, myWxid, senderWxid, isSend)
           if (feedesc) {
-            return payMemo ? `[转账] ${feedesc} ${payMemo}` : `[转账] ${feedesc}`
+            return payMemo ? `${transferPrefix} ${feedesc} ${payMemo}` : `${transferPrefix} ${feedesc}`
           }
-          return '[转账]'
+          return transferPrefix
         }
 
         if (type === '6') return title ? `[文件] ${title}` : '[文件]'
@@ -650,10 +710,11 @@ class ExportService {
           if (xmlType === '2000') {
             const feedesc = this.extractXmlValue(content, 'feedesc')
             const payMemo = this.extractXmlValue(content, 'pay_memo')
+            const transferPrefix = this.getTransferPrefix(content, myWxid, senderWxid, isSend)
             if (feedesc) {
-              return payMemo ? `[转账] ${feedesc} ${payMemo}` : `[转账] ${feedesc}`
+              return payMemo ? `${transferPrefix} ${feedesc} ${payMemo}` : `${transferPrefix} ${feedesc}`
             }
-            return '[转账]'
+            return transferPrefix
           }
 
           // 其他类型
@@ -676,7 +737,10 @@ class ExportService {
     content: string,
     localType: number,
     options: { exportVoiceAsText?: boolean },
-    voiceTranscript?: string
+    voiceTranscript?: string,
+    myWxid?: string,
+    senderWxid?: string,
+    isSend?: boolean
   ): string {
     const safeContent = content || ''
 
@@ -742,8 +806,9 @@ class ExportService {
       if (subType === 2000 || title.includes('转账') || normalized.includes('transfer')) {
         const feedesc = this.extractXmlValue(normalized, 'feedesc')
         const payMemo = this.extractXmlValue(normalized, 'pay_memo')
+        const transferPrefix = this.getTransferPrefix(normalized, myWxid, senderWxid, isSend)
         if (feedesc) {
-          return payMemo ? `[转账]${feedesc} ${payMemo}` : `[转账]${feedesc}`
+          return payMemo ? `${transferPrefix}${feedesc} ${payMemo}` : `${transferPrefix}${feedesc}`
         }
         const amount = this.extractAmountFromText(
           [
@@ -756,7 +821,7 @@ class ExportService {
             .filter(Boolean)
             .join(' ')
         )
-        return amount ? `[转账]${amount}` : '[转账]'
+        return amount ? `${transferPrefix}${amount}` : transferPrefix
       }
 
       if (subType === 3 || normalized.includes('<musicurl') || normalized.includes('<songname')) {
@@ -1256,7 +1321,7 @@ class ExportService {
     return rendered.join('')
   }
 
-  private formatHtmlMessageText(content: string, localType: number): string {
+  private formatHtmlMessageText(content: string, localType: number, myWxid?: string, senderWxid?: string, isSend?: boolean): string {
     if (!content) return ''
 
     if (localType === 1) {
@@ -1264,10 +1329,59 @@ class ExportService {
     }
 
     if (localType === 34) {
-      return this.parseMessageContent(content, localType) || ''
+      return this.parseMessageContent(content, localType, undefined, undefined, myWxid, senderWxid, isSend) || ''
     }
 
-    return this.formatPlainExportContent(content, localType, { exportVoiceAsText: false })
+    return this.formatPlainExportContent(content, localType, { exportVoiceAsText: false }, undefined, myWxid, senderWxid, isSend)
+  }
+
+  private extractHtmlLinkCard(content: string, localType: number): { title: string; url: string } | null {
+    if (!content) return null
+
+    const normalized = this.normalizeAppMessageContent(content)
+    const isAppMessage = localType === 49 || normalized.includes('<appmsg') || normalized.includes('<msg>')
+    if (!isAppMessage) return null
+
+    const subType = this.extractXmlValue(normalized, 'type')
+    if (subType && subType !== '5' && subType !== '49') return null
+
+    const url = this.normalizeHtmlLinkUrl(this.extractXmlValue(normalized, 'url'))
+    if (!url) return null
+
+    const title = this.extractXmlValue(normalized, 'title') || this.extractXmlValue(normalized, 'des') || url
+    return { title, url }
+  }
+
+  private normalizeHtmlLinkUrl(rawUrl: string): string {
+    const value = (rawUrl || '').trim()
+    if (!value) return ''
+
+    const parseHttpUrl = (candidate: string): string => {
+      try {
+        const parsed = new URL(candidate)
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          return parsed.toString()
+        }
+      } catch {
+        return ''
+      }
+      return ''
+    }
+
+    if (value.startsWith('//')) {
+      return parseHttpUrl(`https:${value}`)
+    }
+
+    const direct = parseHttpUrl(value)
+    if (direct) return direct
+
+    const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)
+    const isDomainLike = /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:[/:?#].*)?$/.test(value)
+    if (!hasScheme && isDomainLike) {
+      return parseHttpUrl(`https://${value}`)
+    }
+
+    return ''
   }
 
   /**
@@ -1685,7 +1799,8 @@ class ExportService {
   private async collectMessages(
     sessionId: string,
     cleanedMyWxid: string,
-    dateRange?: { start: number; end: number } | null
+    dateRange?: { start: number; end: number } | null,
+    senderUsernameFilter?: string
   ): Promise<{ rows: any[]; memberSet: Map<string, { member: ChatLabMember; avatarUrl?: string }>; firstTime: number | null; lastTime: number | null }> {
     const rows: any[] = []
     const memberSet = new Map<string, { member: ChatLabMember; avatarUrl?: string }>()
@@ -1745,6 +1860,10 @@ class ExportService {
             }
           } else {
             actualSender = isSend ? cleanedMyWxid : (senderUsername || sessionId)
+          }
+
+          if (senderUsernameFilter && !this.isSameWxid(actualSender, senderUsernameFilter)) {
+            continue
           }
           senderSet.add(actualSender)
 
@@ -2174,7 +2293,7 @@ class ExportService {
         phase: 'preparing'
       })
 
-      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
+      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange, options.senderUsername)
       const allMessages = collected.rows
 
       // 如果没有消息,不创建文件
@@ -2335,11 +2454,19 @@ class ExportService {
           // 使用预先转写的文字
           content = voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]'
         } else {
-          content = this.parseMessageContent(msg.content, msg.localType, sessionId, msg.createTime)
+          content = this.parseMessageContent(
+            msg.content,
+            msg.localType,
+            sessionId,
+            msg.createTime,
+            cleanedMyWxid,
+            msg.senderUsername,
+            msg.isSend
+          )
         }
 
         // 转账消息：追加 "谁转账给谁" 信息
-        if (content && content.startsWith('[转账]') && msg.content) {
+        if (content && this.isTransferExportContent(content) && msg.content) {
           const transferDesc = await this.resolveTransferDesc(
             msg.content,
             cleanedMyWxid,
@@ -2350,7 +2477,7 @@ class ExportService {
             }
           )
           if (transferDesc) {
-            content = content.replace('[转账]', `[转账] (${transferDesc})`)
+            content = this.appendTransferDesc(content, transferDesc)
           }
         }
 
@@ -2561,7 +2688,7 @@ class ExportService {
         phase: 'preparing'
       })
 
-      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
+      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange, options.senderUsername)
 
       // 如果没有消息,不创建文件
       if (collected.rows.length === 0) {
@@ -2705,11 +2832,19 @@ class ExportService {
         } else if (mediaItem) {
           content = mediaItem.relativePath
         } else {
-          content = this.parseMessageContent(msg.content, msg.localType)
+          content = this.parseMessageContent(
+            msg.content,
+            msg.localType,
+            undefined,
+            undefined,
+            cleanedMyWxid,
+            msg.senderUsername,
+            msg.isSend
+          )
         }
 
         // 转账消息：追加 "谁转账给谁" 信息
-        if (content && content.startsWith('[转账]') && msg.content) {
+        if (content && this.isTransferExportContent(content) && msg.content) {
           const transferDesc = await this.resolveTransferDesc(
             msg.content,
             cleanedMyWxid,
@@ -2723,7 +2858,7 @@ class ExportService {
             }
           )
           if (transferDesc) {
-            content = content.replace('[转账]', `[转账] (${transferDesc})`)
+            content = this.appendTransferDesc(content, transferDesc)
           }
         }
 
@@ -2887,7 +3022,7 @@ class ExportService {
         phase: 'preparing'
       })
 
-      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
+      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange, options.senderUsername)
 
       // 如果没有消息,不创建文件
       if (collected.rows.length === 0) {
@@ -3196,19 +3331,25 @@ class ExportService {
             msg.content,
             msg.localType,
             options,
-            voiceTranscriptMap.get(msg.localId)
+            voiceTranscriptMap.get(msg.localId),
+            cleanedMyWxid,
+            msg.senderUsername,
+            msg.isSend
           )
           : (mediaItem?.relativePath
             || this.formatPlainExportContent(
               msg.content,
               msg.localType,
               options,
-              voiceTranscriptMap.get(msg.localId)
+              voiceTranscriptMap.get(msg.localId),
+              cleanedMyWxid,
+              msg.senderUsername,
+              msg.isSend
             ))
 
         // 转账消息：追加 "谁转账给谁" 信息
         let enrichedContentValue = contentValue
-        if (contentValue.startsWith('[转账]') && msg.content) {
+        if (this.isTransferExportContent(contentValue) && msg.content) {
           const transferDesc = await this.resolveTransferDesc(
             msg.content,
             cleanedMyWxid,
@@ -3222,7 +3363,7 @@ class ExportService {
             }
           )
           if (transferDesc) {
-            enrichedContentValue = contentValue.replace('[转账]', `[转账] (${transferDesc})`)
+            enrichedContentValue = this.appendTransferDesc(contentValue, transferDesc)
           }
         }
 
@@ -3368,7 +3509,7 @@ class ExportService {
         phase: 'preparing'
       })
 
-      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
+      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange, options.senderUsername)
 
       // 如果没有消息,不创建文件
       if (collected.rows.length === 0) {
@@ -3507,19 +3648,25 @@ class ExportService {
             msg.content,
             msg.localType,
             options,
-            voiceTranscriptMap.get(msg.localId)
+            voiceTranscriptMap.get(msg.localId),
+            cleanedMyWxid,
+            msg.senderUsername,
+            msg.isSend
           )
           : (mediaItem?.relativePath
             || this.formatPlainExportContent(
               msg.content,
               msg.localType,
               options,
-              voiceTranscriptMap.get(msg.localId)
+              voiceTranscriptMap.get(msg.localId),
+              cleanedMyWxid,
+              msg.senderUsername,
+              msg.isSend
             ))
 
         // 转账消息：追加 "谁转账给谁" 信息
         let enrichedContentValue = contentValue
-        if (contentValue.startsWith('[转账]') && msg.content) {
+        if (this.isTransferExportContent(contentValue) && msg.content) {
           const transferDesc = await this.resolveTransferDesc(
             msg.content,
             cleanedMyWxid,
@@ -3533,7 +3680,7 @@ class ExportService {
             }
           )
           if (transferDesc) {
-            enrichedContentValue = contentValue.replace('[转账]', `[转账] (${transferDesc})`)
+            enrichedContentValue = this.appendTransferDesc(contentValue, transferDesc)
           }
         }
 
@@ -3642,7 +3789,7 @@ class ExportService {
         phase: 'preparing'
       })
 
-      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
+      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange, options.senderUsername)
       if (collected.rows.length === 0) {
         return { success: false, error: '该会话在指定时间范围内没有消息' }
       }
@@ -3805,7 +3952,15 @@ class ExportService {
 
         const msgText = msg.localType === 34 && options.exportVoiceAsText
           ? (voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]')
-          : (this.parseMessageContent(msg.content, msg.localType, sessionId, msg.createTime) || '')
+          : (this.parseMessageContent(
+            msg.content,
+            msg.localType,
+            sessionId,
+            msg.createTime,
+            cleanedMyWxid,
+            msg.senderUsername,
+            msg.isSend
+          ) || '')
         const src = this.getWeCloneSource(msg, typeName, mediaItem)
 
         const row = [
@@ -3955,6 +4110,15 @@ class ExportService {
       const isGroup = sessionId.includes('@chatroom')
       const sessionInfo = await this.getContactInfo(sessionId)
       const myInfo = await this.getContactInfo(cleanedMyWxid)
+      const contactCache = new Map<string, { success: boolean; contact?: any; error?: string }>()
+      const getContactCached = async (username: string) => {
+        if (contactCache.has(username)) {
+          return contactCache.get(username)!
+        }
+        const result = await wcdbService.getContact(username)
+        contactCache.set(username, result)
+        return result
+      }
 
       onProgress?.({
         current: 0,
@@ -3967,12 +4131,30 @@ class ExportService {
         await this.ensureVoiceModel(onProgress)
       }
 
-      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
+      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange, options.senderUsername)
 
       // 如果没有消息,不创建文件
       if (collected.rows.length === 0) {
         return { success: false, error: '该会话在指定时间范围内没有消息' }
       }
+
+      const senderUsernames = new Set<string>()
+      for (const msg of collected.rows) {
+        if (msg.senderUsername) senderUsernames.add(msg.senderUsername)
+      }
+      senderUsernames.add(sessionId)
+      await this.preloadContacts(senderUsernames, contactCache)
+
+      const groupNicknameCandidates = isGroup
+        ? this.buildGroupNicknameIdCandidates([
+          ...Array.from(senderUsernames.values()),
+          ...collected.rows.map(msg => msg.senderUsername),
+          cleanedMyWxid
+        ])
+        : []
+      const groupNicknamesMap = isGroup
+        ? await this.getGroupNicknamesForRoom(sessionId, groupNicknameCandidates)
+        : new Map<string, string>()
 
       if (isGroup) {
         await this.mergeGroupMembers(sessionId, collected.memberSet, options.exportAvatars === true)
@@ -4179,13 +4361,38 @@ class ExportService {
         const timeText = this.formatTimestamp(msg.createTime)
         const typeName = this.getMessageTypeName(msg.localType)
 
-        let textContent = this.formatHtmlMessageText(msg.content, msg.localType)
+        let textContent = this.formatHtmlMessageText(
+          msg.content,
+          msg.localType,
+          cleanedMyWxid,
+          msg.senderUsername,
+          msg.isSend
+        )
         if (msg.localType === 34 && useVoiceTranscript) {
           textContent = voiceTranscriptMap.get(msg.localId) || '[语音消息 - 转文字失败]'
         }
         if (mediaItem && (msg.localType === 3 || msg.localType === 47)) {
           textContent = ''
         }
+        if (this.isTransferExportContent(textContent) && msg.content) {
+          const transferDesc = await this.resolveTransferDesc(
+            msg.content,
+            cleanedMyWxid,
+            groupNicknamesMap,
+            async (username) => {
+              const c = await getContactCached(username)
+              if (c.success && c.contact) {
+                return c.contact.remark || c.contact.nickName || c.contact.alias || username
+              }
+              return username
+            }
+          )
+          if (transferDesc) {
+            textContent = this.appendTransferDesc(textContent, transferDesc)
+          }
+        }
+
+        const linkCard = this.extractHtmlLinkCard(msg.content, msg.localType)
 
         let mediaHtml = ''
         if (mediaItem?.kind === 'image') {
@@ -4201,9 +4408,11 @@ class ExportService {
           mediaHtml = `<video class="message-media video" controls preload="metadata"${posterAttr} src="${this.escapeAttribute(encodeURI(mediaItem.relativePath))}"></video>`
         }
 
-        const textHtml = textContent
-          ? `<div class="message-text">${this.renderTextWithEmoji(textContent).replace(/\r?\n/g, '<br />')}</div>`
-          : ''
+        const textHtml = linkCard
+          ? `<div class="message-text"><a class="message-link-card" href="${this.escapeAttribute(linkCard.url)}" target="_blank" rel="noopener noreferrer">${this.renderTextWithEmoji(linkCard.title).replace(/\r?\n/g, '<br />')}</a></div>`
+          : (textContent
+            ? `<div class="message-text">${this.renderTextWithEmoji(textContent).replace(/\r?\n/g, '<br />')}</div>`
+            : '')
         const senderNameHtml = isGroup
           ? `<div class="sender-name">${this.escapeHtml(senderName)}</div>`
           : ''
@@ -4394,7 +4603,7 @@ class ExportService {
 
     for (const sessionId of sessionIds) {
       const sessionInfo = await this.getContactInfo(sessionId)
-      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange)
+      const collected = await this.collectMessages(sessionId, cleanedMyWxid, options.dateRange, options.senderUsername)
       const msgs = collected.rows
       const voiceMsgs = msgs.filter(m => m.localType === 34)
       const mediaMsgs = msgs.filter(m => {
@@ -4493,7 +4702,10 @@ class ExportService {
           phase: 'exporting'
         })
 
-        const safeName = sessionInfo.displayName.replace(/[<>:"\/\\|?*]/g, '_').replace(/\.+$/, '')
+        const sanitizeName = (value: string) => value.replace(/[<>:"\/\\|?*]/g, '_').replace(/\.+$/, '').trim()
+        const baseName = sanitizeName(sessionInfo.displayName || sessionId) || sanitizeName(sessionId) || 'session'
+        const suffix = sanitizeName(options.fileNameSuffix || '')
+        const safeName = suffix ? `${baseName}_${suffix}` : baseName
         const useSessionFolder = sessionLayout === 'per-session'
         const sessionDir = useSessionFolder ? path.join(outputDir, safeName) : outputDir
 
@@ -4557,3 +4769,4 @@ class ExportService {
 }
 
 export const exportService = new ExportService()
+

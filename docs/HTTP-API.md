@@ -50,12 +50,20 @@ GET /api/v1/messages
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `talker` | string | ✅ | 会话 ID（wxid 或群 ID） |
-| `limit` | number | ❌ | 返回数量限制，默认 100 |
+| `limit` | number | ❌ | 返回数量限制，默认 100，范围 `1~10000` |
 | `offset` | number | ❌ | 偏移量，用于分页，默认 0 |
 | `start` | string | ❌ | 开始时间，格式 YYYYMMDD |
 | `end` | string | ❌ | 结束时间，格式 YYYYMMDD |
+| `keyword` | string | ❌ | 关键词过滤（基于消息显示文本） |
 | `chatlab` | string | ❌ | 设为 `1` 则输出 ChatLab 格式 |
 | `format` | string | ❌ | 输出格式：`json`（默认）或 `chatlab` |
+| `media` | string | ❌ | 设为 `1` 时导出媒体并返回媒体路径（兼容别名 `meiti`）；`0` 时媒体返回占位符 |
+| `image` | string | ❌ | 在 `media=1` 时控制图片导出，`1/0`（兼容别名 `tupian`） |
+| `voice` | string | ❌ | 在 `media=1` 时控制语音导出，`1/0`（兼容别名 `vioce`） |
+| `video` | string | ❌ | 在 `media=1` 时控制视频导出，`1/0` |
+| `emoji` | string | ❌ | 在 `media=1` 时控制表情导出，`1/0` |
+
+默认媒体导出目录：`%USERPROFILE%\\Documents\\WeFlow\\api-media`
 
 **示例请求**
 
@@ -68,6 +76,12 @@ GET http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&chatlab=1
 
 # 带时间范围查询
 GET http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&start=20260101&end=20260205&limit=100
+
+# 开启媒体导出（只导出图片和语音）
+GET http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&media=1&image=1&voice=1&video=0&emoji=0
+
+# 关键词过滤
+GET http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&keyword=项目进度&limit=50
 ```
 
 **响应（原始格式）**
@@ -77,15 +91,21 @@ GET http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&start=20260101&end=202
   "talker": "wxid_xxx",
   "count": 50,
   "hasMore": true,
+  "media": {
+    "enabled": true,
+    "exportPath": "C:\\Users\\Alice\\Documents\\WeFlow\\api-media",
+    "count": 12
+  },
   "messages": [
     {
       "localId": 123,
-      "talker": "wxid_xxx",
-      "type": 1,
-      "content": "消息内容",
+      "localType": 3,
+      "content": "[图片]",
       "createTime": 1738713600000,
-      "isSelf": false,
-      "sender": "wxid_sender"
+      "senderUsername": "wxid_sender",
+      "mediaType": "image",
+      "mediaFileName": "image_123.jpg",
+      "mediaPath": "C:\\Users\\Alice\\Documents\\WeFlow\\api-media\\wxid_xxx\\images\\image_123.jpg"
     }
   ]
 }
@@ -119,9 +139,15 @@ GET http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&start=20260101&end=202
       "accountName": "用户名",
       "timestamp": 1738713600000,
       "type": 0,
-      "content": "消息内容"
+      "content": "消息内容",
+      "mediaPath": "C:\\Users\\Alice\\Documents\\WeFlow\\api-media\\wxid_xxx\\images\\image_123.jpg"
     }
-  ]
+  ],
+  "media": {
+    "enabled": true,
+    "exportPath": "C:\\Users\\Alice\\Documents\\WeFlow\\api-media",
+    "count": 12
+  }
 }
 ```
 

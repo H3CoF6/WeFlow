@@ -1112,6 +1112,13 @@ class ChatService {
     return Number.isFinite(parsed) ? parsed : NaN
   }
 
+  /**
+   * HTTP API 复用消息解析逻辑，确保和应用内展示一致。
+   */
+  mapRowsToMessagesForApi(rows: Record<string, any>[]): Message[] {
+    return this.mapRowsToMessages(rows)
+  }
+
   private mapRowsToMessages(rows: Record<string, any>[]): Message[] {
     const myWxid = this.configService.get('myWxid')
     const cleanedWxid = myWxid ? this.cleanAccountDirName(myWxid) : null

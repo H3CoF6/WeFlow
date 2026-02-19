@@ -45,6 +45,12 @@
     font-weight: 600;
     color: var(--primary);
   }
+
+  .error-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
 }
 
 .page-header {

@@ -275,6 +275,17 @@ export interface ElectronAPI {
       count?: number
       error?: string
     }>
+    exportGroupMemberMessages: (
+      chatroomId: string,
+      memberUsername: string,
+      outputPath: string,
+      startTime?: number,
+      endTime?: number
+    ) => Promise<{
+      success: boolean
+      count?: number
+      error?: string
+    }>
   }
   annualReport: {
     getAvailableYears: () => Promise<{
@@ -433,7 +444,7 @@ export interface ElectronAPI {
       success: boolean
       error?: string
     }>
-    exportContacts: (outputDir: string, options: { format: 'json' | 'csv' | 'vcf'; exportAvatars: boolean; contactTypes: { friends: boolean; groups: boolean; officials: boolean } }) => Promise<{
+    exportContacts: (outputDir: string, options: { format: 'json' | 'csv' | 'vcf'; exportAvatars: boolean; contactTypes: { friends: boolean; groups: boolean; officials: boolean }; selectedUsernames?: string[] }) => Promise<{
       success: boolean
       successCount?: number
       error?: string
@@ -492,15 +503,23 @@ export interface ElectronAPI {
     onToken: (callback: (token: string) => void) => () => void
     onDownloadProgress: (callback: (payload: { downloaded: number; total: number; speed: number }) => void) => () => void
   }
+  http: {
+    start: (port?: number) => Promise<{ success: boolean; port?: number; error?: string }>
+    stop: () => Promise<{ success: boolean }>
+    status: () => Promise<{ running: boolean; port: number; mediaExportPath: string }>
+  }
 }
 
 export interface ExportOptions {
-  format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'sql'
+  format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
   dateRange?: { start: number; end: number } | null
+  senderUsername?: string
+  fileNameSuffix?: string
   exportMedia?: boolean
   exportAvatars?: boolean
   exportImages?: boolean
   exportVoices?: boolean
+  exportVideos?: boolean
   exportEmojis?: boolean
   exportVoiceAsText?: boolean
   excelCompactColumns?: boolean

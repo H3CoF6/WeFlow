@@ -1,12 +1,15 @@
-/**
+﻿/**
  * HTTP API 服务
  * 提供 ChatLab 标准化格式的消息查询 API
  */
 import * as http from 'http'
+import * as fs from 'fs'
+import * as path from 'path'
 import { URL } from 'url'
 import { chatService, Message } from './chatService'
 import { wcdbService } from './wcdbService'
 import { ConfigService } from './config'
+import { videoService } from './videoService'
 
 // ChatLab 格式定义
 interface ChatLabHeader {
@@ -42,6 +45,7 @@ interface ChatLabMessage {
   content: string | null
   platformMessageId?: string
   replyToMessageId?: string
+  mediaPath?: string
 }
 
 interface ChatLabData {
@@ -49,6 +53,22 @@ interface ChatLabData {
   meta: ChatLabMeta
   members: ChatLabMember[]
   messages: ChatLabMessage[]
+}
+
+interface ApiMediaOptions {
+  enabled: boolean
+  exportImages: boolean
+  exportVoices: boolean
+  exportVideos: boolean
+  exportEmojis: boolean
+}
+
+type MediaKind = 'image' | 'voice' | 'video' | 'emoji'
+
+interface ApiExportedMedia {
+  kind: MediaKind
+  fileName: string
+  fullPath: string
 }
 
 // ChatLab 消息类型映射
@@ -163,6 +183,10 @@ class HttpService {
     return this.port
   }
 
+  getDefaultMediaExportPath(): string {
+    return this.getApiMediaExportPath()
+  }
+
   /**
    * 处理 HTTP 请求
    */
@@ -213,7 +237,7 @@ class HttpService {
     ascending: boolean
   ): Promise<{ success: boolean; messages?: Message[]; hasMore?: boolean; error?: string }> {
     try {
-      // 使用固定 batch 大小（与 limit 相同或最大 500）来减少循环次数
+      // 使用固定 batch 大小（与 limit 相同或最多 500）来减少循环次数
       const batchSize = Math.min(limit, 500)
       const beginTimestamp = startTime > 10000000000 ? Math.floor(startTime / 1000) : startTime
       const endTimestamp = endTime > 10000000000 ? Math.floor(endTime / 1000) : endTime
@@ -240,7 +264,7 @@ class HttpService {
           let rows = batch.rows
           hasMore = batch.hasMore === true
 
-          // 处理 offset: 跳过前 N 条
+          // 处理 offset：跳过前 N 条
           if (skipped < offset) {
             const remaining = offset - skipped
             if (remaining >= rows.length) {
@@ -256,7 +280,7 @@ class HttpService {
 
         const trimmedRows = allRows.slice(0, limit)
         const finalHasMore = hasMore || allRows.length > limit
-        const messages = this.mapRowsToMessagesSimple(trimmedRows)
+        const messages = chatService.mapRowsToMessagesForApi(trimmedRows)
         return { success: true, messages, hasMore: finalHasMore }
       } finally {
         await wcdbService.closeMessageCursor(cursor)
@@ -268,145 +292,125 @@ class HttpService {
   }
 
   /**
-   * 简单的行数据到 Message 映射（用于 API 输出）
+   * Query param helpers.
    */
-  private mapRowsToMessagesSimple(rows: Record<string, any>[]): Message[] {
-    const myWxid = this.configService.get('myWxid') || ''
-    const messages: Message[] = []
-
-    for (const row of rows) {
-      const content = this.getField(row, ['message_content', 'messageContent', 'content', 'msg_content', 'WCDB_CT_message_content']) || ''
-      const localType = parseInt(this.getField(row, ['local_type', 'localType', 'type', 'msg_type', 'WCDB_CT_local_type']) || '1', 10)
-      const isSendRaw = this.getField(row, ['computed_is_send', 'computedIsSend', 'is_send', 'isSend', 'WCDB_CT_is_send'])
-      const senderUsername = this.getField(row, ['sender_username', 'senderUsername', 'sender', 'WCDB_CT_sender_username']) || ''
-      const createTime = parseInt(this.getField(row, ['create_time', 'createTime', 'msg_create_time', 'WCDB_CT_create_time']) || '0', 10)
-      const localId = parseInt(this.getField(row, ['local_id', 'localId', 'WCDB_CT_local_id', 'rowid']) || '0', 10)
-      const serverId = this.getField(row, ['server_id', 'serverId', 'WCDB_CT_server_id']) || ''
-
-      let isSend: number
-      if (isSendRaw !== null && isSendRaw !== undefined) {
-        isSend = parseInt(isSendRaw, 10)
-      } else if (senderUsername && myWxid) {
-        isSend = senderUsername.toLowerCase() === myWxid.toLowerCase() ? 1 : 0
-      } else {
-        isSend = 0
-      }
-
-      // 解析消息内容中的特殊字段
-      let parsedContent = content
-      let xmlType: string | undefined
-      let linkTitle: string | undefined
-      let fileName: string | undefined
-      let emojiCdnUrl: string | undefined
-      let emojiMd5: string | undefined
-      let imageMd5: string | undefined
-      let videoMd5: string | undefined
-      let cardNickname: string | undefined
-
-      if (localType === 49 && content) {
-        // 提取 type 子标签
-        const typeMatch = /<type>(\d+)<\/type>/i.exec(content)
-        if (typeMatch) xmlType = typeMatch[1]
-        // 提取 title
-        const titleMatch = /<title>([^<]*)<\/title>/i.exec(content)
-        if (titleMatch) linkTitle = titleMatch[1]
-        // 提取文件名
-        const fnMatch = /<title>([^<]*)<\/title>/i.exec(content)
-        if (fnMatch) fileName = fnMatch[1]
-      }
-
-      if (localType === 47 && content) {
-        const cdnMatch = /cdnurl\s*=\s*"([^"]+)"/i.exec(content)
-        if (cdnMatch) emojiCdnUrl = cdnMatch[1]
-        const md5Match = /md5\s*=\s*"([^"]+)"/i.exec(content)
-        if (md5Match) emojiMd5 = md5Match[1]
-      }
-
-      messages.push({
-        localId,
-        talker: '',
-        localType,
-        createTime,
-        sortSeq: createTime,
-        content: parsedContent,
-        isSend,
-        senderUsername,
-        serverId: serverId ? parseInt(serverId, 10) || 0 : 0,
-        rawContent: content,
-        parsedContent: content,
-        emojiCdnUrl,
-        emojiMd5,
-        imageMd5,
-        videoMd5,
-        xmlType,
-        linkTitle,
-        fileName,
-        cardNickname
-      } as Message)
-    }
-
-    return messages
+  private parseIntParam(value: string | null, defaultValue: number, min: number, max: number): number {
+    const parsed = parseInt(value || '', 10)
+    if (!Number.isFinite(parsed)) return defaultValue
+    return Math.min(Math.max(parsed, min), max)
   }
 
-  /**
-   * 从行数据中获取字段值（兼容多种字段名）
-   */
-  private getField(row: Record<string, any>, keys: string[]): string | null {
+  private parseBooleanParam(url: URL, keys: string[], defaultValue: boolean = false): boolean {
     for (const key of keys) {
-      if (row[key] !== undefined && row[key] !== null) {
-        return String(row[key])
-      }
+      const raw = url.searchParams.get(key)
+      if (raw === null) continue
+      const normalized = raw.trim().toLowerCase()
+      if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+      if (['0', 'false', 'no', 'off'].includes(normalized)) return false
     }
-    return null
+    return defaultValue
   }
 
-  /**
-   * 处理消息查询
-   * GET /api/v1/messages?talker=xxx&limit=100&start=20260101&chatlab=1
-   */
+  private parseMediaOptions(url: URL): ApiMediaOptions {
+    const mediaEnabled = this.parseBooleanParam(url, ['media', 'meiti'], false)
+    if (!mediaEnabled) {
+      return {
+        enabled: false,
+        exportImages: false,
+        exportVoices: false,
+        exportVideos: false,
+        exportEmojis: false
+      }
+    }
+
+    return {
+      enabled: true,
+      exportImages: this.parseBooleanParam(url, ['image', 'tupian'], true),
+      exportVoices: this.parseBooleanParam(url, ['voice', 'vioce'], true),
+      exportVideos: this.parseBooleanParam(url, ['video'], true),
+      exportEmojis: this.parseBooleanParam(url, ['emoji'], true)
+    }
+  }
+
   private async handleMessages(url: URL, res: http.ServerResponse): Promise<void> {
-    const talker = url.searchParams.get('talker')
-    const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 10000)
-    const offset = parseInt(url.searchParams.get('offset') || '0', 10)
+    const talker = (url.searchParams.get('talker') || '').trim()
+    const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
+    const offset = this.parseIntParam(url.searchParams.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER)
+    const keyword = (url.searchParams.get('keyword') || '').trim().toLowerCase()
     const startParam = url.searchParams.get('start')
     const endParam = url.searchParams.get('end')
-    const chatlab = url.searchParams.get('chatlab') === '1'
-    const formatParam = url.searchParams.get('format')
+    const chatlab = this.parseBooleanParam(url, ['chatlab'], false)
+    const formatParam = (url.searchParams.get('format') || '').trim().toLowerCase()
     const format = formatParam || (chatlab ? 'chatlab' : 'json')
+    const mediaOptions = this.parseMediaOptions(url)
 
     if (!talker) {
       this.sendError(res, 400, 'Missing required parameter: talker')
       return
     }
 
-    // 解析时间参数 (支持 YYYYMMDD 格式)
+    if (format !== 'json' && format !== 'chatlab') {
+      this.sendError(res, 400, 'Invalid format, supported: json/chatlab')
+      return
+    }
+
     const startTime = this.parseTimeParam(startParam)
     const endTime = this.parseTimeParam(endParam, true)
+    const queryOffset = keyword ? 0 : offset
+    const queryLimit = keyword ? 10000 : limit
 
-    // 使用批量获取方法，绕过 chatService 的单 batch 限制
-    const result = await this.fetchMessagesBatch(talker, offset, limit, startTime, endTime, true)
+    const result = await this.fetchMessagesBatch(talker, queryOffset, queryLimit, startTime, endTime, true)
     if (!result.success || !result.messages) {
       this.sendError(res, 500, result.error || 'Failed to get messages')
       return
     }
 
-    if (format === 'chatlab') {
-      // 获取会话显示名
-      const displayNames = await this.getDisplayNames([talker])
-      const talkerName = displayNames[talker] || talker
+    let messages = result.messages
+    let hasMore = result.hasMore === true
 
-      const chatLabData = await this.convertToChatLab(result.messages, talker, talkerName)
-      this.sendJson(res, chatLabData)
-    } else {
-      // 返回原始消息格式
-      this.sendJson(res, {
-        success: true,
-        talker,
-        count: result.messages.length,
-        hasMore: result.hasMore,
-        messages: result.messages
+    if (keyword) {
+      const filtered = messages.filter((msg) => {
+        const content = (msg.parsedContent || msg.rawContent || '').toLowerCase()
+        return content.includes(keyword)
       })
+      const endIndex = offset + limit
+      hasMore = filtered.length > endIndex
+      messages = filtered.slice(offset, endIndex)
     }
+
+    const mediaMap = mediaOptions.enabled
+      ? await this.exportMediaForMessages(messages, talker, mediaOptions)
+      : new Map<number, ApiExportedMedia>()
+
+    const displayNames = await this.getDisplayNames([talker])
+    const talkerName = displayNames[talker] || talker
+
+    if (format === 'chatlab') {
+      const chatLabData = await this.convertToChatLab(messages, talker, talkerName, mediaMap)
+      this.sendJson(res, {
+        ...chatLabData,
+        media: {
+          enabled: mediaOptions.enabled,
+          exportPath: this.getApiMediaExportPath(),
+          count: mediaMap.size
+        }
+      })
+      return
+    }
+
+    const apiMessages = messages.map((msg) => this.toApiMessage(msg, mediaMap.get(msg.localId)))
+    this.sendJson(res, {
+      success: true,
+      talker,
+      count: apiMessages.length,
+      hasMore,
+      media: {
+        enabled: mediaOptions.enabled,
+        exportPath: this.getApiMediaExportPath(),
+        count: mediaMap.size
+      },
+      messages: apiMessages
+    })
   }
 
   /**
@@ -414,8 +418,8 @@ class HttpService {
    * GET /api/v1/sessions?keyword=xxx&limit=100
    */
   private async handleSessions(url: URL, res: http.ServerResponse): Promise<void> {
-    const keyword = url.searchParams.get('keyword') || ''
-    const limit = parseInt(url.searchParams.get('limit') || '100', 10)
+    const keyword = (url.searchParams.get('keyword') || '').trim()
+    const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
 
     try {
       const sessions = await chatService.getSessions()
@@ -457,8 +461,8 @@ class HttpService {
    * GET /api/v1/contacts?keyword=xxx&limit=100
    */
   private async handleContacts(url: URL, res: http.ServerResponse): Promise<void> {
-    const keyword = url.searchParams.get('keyword') || ''
-    const limit = parseInt(url.searchParams.get('limit') || '100', 10)
+    const keyword = (url.searchParams.get('keyword') || '').trim()
+    const limit = this.parseIntParam(url.searchParams.get('limit'), 100, 1, 10000)
 
     try {
       const contacts = await chatService.getContacts()
@@ -490,6 +494,156 @@ class HttpService {
     }
   }
 
+  private getApiMediaExportPath(): string {
+    return path.join(this.configService.getCacheBasePath(), 'api-media')
+  }
+
+  private sanitizeFileName(value: string, fallback: string): string {
+    const safe = (value || '')
+      .trim()
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+      .replace(/\.+$/g, '')
+    return safe || fallback
+  }
+
+  private ensureDir(dirPath: string): void {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true })
+    }
+  }
+
+  private detectImageExt(buffer: Buffer): string {
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return '.jpg'
+    if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return '.png'
+    if (buffer.length >= 6) {
+      const sig6 = buffer.subarray(0, 6).toString('ascii')
+      if (sig6 === 'GIF87a' || sig6 === 'GIF89a') return '.gif'
+    }
+    if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return '.webp'
+    if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) return '.bmp'
+    return '.jpg'
+  }
+
+  private async exportMediaForMessages(
+    messages: Message[],
+    talker: string,
+    options: ApiMediaOptions
+  ): Promise<Map<number, ApiExportedMedia>> {
+    const mediaMap = new Map<number, ApiExportedMedia>()
+    if (!options.enabled || messages.length === 0) {
+      return mediaMap
+    }
+
+    const sessionDir = path.join(this.getApiMediaExportPath(), this.sanitizeFileName(talker, 'session'))
+    this.ensureDir(sessionDir)
+
+    for (const msg of messages) {
+      const exported = await this.exportMediaForMessage(msg, talker, sessionDir, options)
+      if (exported) {
+        mediaMap.set(msg.localId, exported)
+      }
+    }
+
+    return mediaMap
+  }
+
+  private async exportMediaForMessage(
+    msg: Message,
+    talker: string,
+    sessionDir: string,
+    options: ApiMediaOptions
+  ): Promise<ApiExportedMedia | null> {
+    try {
+      if (msg.localType === 3 && options.exportImages) {
+        const result = await chatService.getImageData(talker, String(msg.localId))
+        if (result.success && result.data) {
+          const imageBuffer = Buffer.from(result.data, 'base64')
+          const ext = this.detectImageExt(imageBuffer)
+          const fileBase = this.sanitizeFileName(msg.imageMd5 || msg.imageDatName || `image_${msg.localId}`, `image_${msg.localId}`)
+          const fileName = `${fileBase}${ext}`
+          const targetDir = path.join(sessionDir, 'images')
+          const fullPath = path.join(targetDir, fileName)
+          this.ensureDir(targetDir)
+          if (!fs.existsSync(fullPath)) {
+            fs.writeFileSync(fullPath, imageBuffer)
+          }
+          return { kind: 'image', fileName, fullPath }
+        }
+      }
+
+      if (msg.localType === 34 && options.exportVoices) {
+        const result = await chatService.getVoiceData(
+          talker,
+          String(msg.localId),
+          msg.createTime || undefined,
+          msg.serverId || undefined
+        )
+        if (result.success && result.data) {
+          const fileName = `voice_${msg.localId}.wav`
+          const targetDir = path.join(sessionDir, 'voices')
+          const fullPath = path.join(targetDir, fileName)
+          this.ensureDir(targetDir)
+          if (!fs.existsSync(fullPath)) {
+            fs.writeFileSync(fullPath, Buffer.from(result.data, 'base64'))
+          }
+          return { kind: 'voice', fileName, fullPath }
+        }
+      }
+
+      if (msg.localType === 43 && options.exportVideos && msg.videoMd5) {
+        const info = await videoService.getVideoInfo(msg.videoMd5)
+        if (info.exists && info.videoUrl && fs.existsSync(info.videoUrl)) {
+          const ext = path.extname(info.videoUrl) || '.mp4'
+          const fileName = `${this.sanitizeFileName(msg.videoMd5, `video_${msg.localId}`)}${ext}`
+          const targetDir = path.join(sessionDir, 'videos')
+          const fullPath = path.join(targetDir, fileName)
+          this.ensureDir(targetDir)
+          if (!fs.existsSync(fullPath)) {
+            fs.copyFileSync(info.videoUrl, fullPath)
+          }
+          return { kind: 'video', fileName, fullPath }
+        }
+      }
+
+      if (msg.localType === 47 && options.exportEmojis && msg.emojiCdnUrl) {
+        const result = await chatService.downloadEmoji(msg.emojiCdnUrl, msg.emojiMd5)
+        if (result.success && result.localPath && fs.existsSync(result.localPath)) {
+          const sourceExt = path.extname(result.localPath) || '.gif'
+          const fileName = `${this.sanitizeFileName(msg.emojiMd5 || `emoji_${msg.localId}`, `emoji_${msg.localId}`)}${sourceExt}`
+          const targetDir = path.join(sessionDir, 'emojis')
+          const fullPath = path.join(targetDir, fileName)
+          this.ensureDir(targetDir)
+          if (!fs.existsSync(fullPath)) {
+            fs.copyFileSync(result.localPath, fullPath)
+          }
+          return { kind: 'emoji', fileName, fullPath }
+        }
+      }
+    } catch (e) {
+      console.warn('[HttpService] exportMediaForMessage failed:', e)
+    }
+
+    return null
+  }
+
+  private toApiMessage(msg: Message, media?: ApiExportedMedia): Record<string, any> {
+    return {
+      localId: msg.localId,
+      serverId: msg.serverId,
+      localType: msg.localType,
+      createTime: msg.createTime,
+      sortSeq: msg.sortSeq,
+      isSend: msg.isSend,
+      senderUsername: msg.senderUsername,
+      content: this.getMessageContent(msg),
+      rawContent: msg.rawContent,
+      parsedContent: msg.parsedContent,
+      mediaType: media?.kind,
+      mediaFileName: media?.fileName,
+      mediaPath: media?.fullPath
+    }
+  }
+
   /**
    * 解析时间参数
    * 支持 YYYYMMDD 格式，返回秒级时间戳
@@ -497,7 +651,7 @@ class HttpService {
   private parseTimeParam(param: string | null, isEnd: boolean = false): number {
     if (!param) return 0
 
-    // 纯数字且长度为8，视为 YYYYMMDD
+    // 纯数字且长度为 8，视为 YYYYMMDD
     if (/^\d{8}$/.test(param)) {
       const year = parseInt(param.slice(0, 4), 10)
       const month = parseInt(param.slice(4, 6), 10) - 1
@@ -539,7 +693,12 @@ class HttpService {
   /**
    * 转换为 ChatLab 格式
    */
-  private async convertToChatLab(messages: Message[], talkerId: string, talkerName: string): Promise<ChatLabData> {
+  private async convertToChatLab(
+    messages: Message[],
+    talkerId: string,
+    talkerName: string,
+    mediaMap: Map<number, ApiExportedMedia> = new Map()
+  ): Promise<ChatLabData> {
     const isGroup = talkerId.endsWith('@chatroom')
     const myWxid = this.configService.get('myWxid') || ''
 
@@ -603,7 +762,8 @@ class HttpService {
         timestamp: msg.createTime,
         type: this.mapMessageType(msg.localType, msg),
         content: this.getMessageContent(msg),
-        platformMessageId: msg.serverId ? String(msg.serverId) : undefined
+        platformMessageId: msg.serverId ? String(msg.serverId) : undefined,
+        mediaPath: mediaMap.get(msg.localId)?.fullPath
       }
     })
 
@@ -705,13 +865,13 @@ class HttpService {
       case 1:
         return msg.rawContent || null
       case 3:
-        return msg.imageMd5 || '[图片]'
+        return '[图片]'
       case 34:
         return '[语音]'
       case 43:
-        return msg.videoMd5 || '[视频]'
+        return '[视频]'
       case 47:
-        return msg.emojiCdnUrl || msg.emojiMd5 || '[表情]'
+        return '[表情]'
       case 42:
         return msg.cardNickname || '[名片]'
       case 48:
@@ -743,3 +903,4 @@ class HttpService {
 }
 
 export const httpService = new HttpService()
+

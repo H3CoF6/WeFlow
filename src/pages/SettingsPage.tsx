@@ -148,6 +148,7 @@ function SettingsPage() {
   const [httpApiEnabled, setHttpApiEnabled] = useState(false)
   const [httpApiPort, setHttpApiPort] = useState(5031)
   const [httpApiRunning, setHttpApiRunning] = useState(false)
+  const [httpApiMediaExportPath, setHttpApiMediaExportPath] = useState('')
   const [isTogglingApi, setIsTogglingApi] = useState(false)
   const [showApiWarning, setShowApiWarning] = useState(false)
 
@@ -168,6 +169,9 @@ function SettingsPage() {
         setHttpApiRunning(status.running)
         if (status.port) {
           setHttpApiPort(status.port)
+        }
+        if (status.mediaExportPath) {
+          setHttpApiMediaExportPath(status.mediaExportPath)
         }
       } catch (e) {
         console.error('检查 API 状态失败:', e)
@@ -1978,6 +1982,17 @@ function SettingsPage() {
       )}
 
       {/* API 安全警告弹窗 */}
+      <div className="form-group">
+        <label>默认媒体导出目录</label>
+        <span className="form-hint">`/api/v1/messages` 在开启 `media=1` 时会把媒体保存到这里</span>
+        <input
+          type="text"
+          className="field-input"
+          value={httpApiMediaExportPath || '未获取到目录'}
+          readOnly
+        />
+      </div>
+
       {showApiWarning && (
         <div className="modal-overlay" onClick={() => setShowApiWarning(false)}>
           <div className="api-warning-modal" onClick={(e) => e.stopPropagation()}>

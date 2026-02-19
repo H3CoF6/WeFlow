@@ -186,6 +186,17 @@ body {
   word-break: break-word;
 }
 
+.message-link-card {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+.message-link-card:hover {
+  color: #1d4ed8;
+}
+
 .inline-emoji {
   width: 22px;
   height: 22px;
