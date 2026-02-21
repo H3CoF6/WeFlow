@@ -25,7 +25,7 @@ import NotificationWindow from './pages/NotificationWindow'
 import AIChatPage from './pages/AIChatPage'
 
 import { useAppStore } from './stores/appStore'
-import { themes, useThemeStore, type ThemeId } from './stores/themeStore'
+import { themes, useThemeStore, type ThemeId, type ThemeMode } from './stores/themeStore'
 import * as configService from './services/config'
 import { Download, X, Shield } from 'lucide-react'
 import './App.scss'
@@ -101,14 +101,27 @@ function App() {
 
   // 应用主题
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', currentTheme)
-    document.documentElement.setAttribute('data-mode', themeMode)
-
-    // 更新窗口控件颜色以适配主题
-    const symbolColor = themeMode === 'dark' ? '#ffffff' : '#1a1a1a'
-    if (!isOnboardingWindow && !isNotificationWindow) {
-      window.electronAPI.window.setTitleBarOverlay({ symbolColor })
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const applyMode = (mode: ThemeMode, systemDark?: boolean) => {
+      const effectiveMode = mode === 'system' ? (systemDark ?? mq.matches ? 'dark' : 'light') : mode
+      document.documentElement.setAttribute('data-theme', currentTheme)
+      document.documentElement.setAttribute('data-mode', effectiveMode)
+      const symbolColor = effectiveMode === 'dark' ? '#ffffff' : '#1a1a1a'
+      if (!isOnboardingWindow && !isNotificationWindow) {
+        window.electronAPI.window.setTitleBarOverlay({ symbolColor })
+      }
     }
+
+    applyMode(themeMode)
+
+    // 监听系统主题变化
+    const handler = (e: MediaQueryListEvent) => {
+      if (useThemeStore.getState().themeMode === 'system') {
+        applyMode('system', e.matches)
+      }
+    }
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
   }, [currentTheme, themeMode, isOnboardingWindow, isNotificationWindow])
 
   // 读取已保存的主题设置
@@ -122,7 +135,7 @@ function App() {
         if (savedThemeId && themes.some((theme) => theme.id === savedThemeId)) {
           setTheme(savedThemeId as ThemeId)
         }
-        if (savedThemeMode === 'light' || savedThemeMode === 'dark') {
+        if (savedThemeMode === 'light' || savedThemeMode === 'dark' || savedThemeMode === 'system') {
           setThemeMode(savedThemeMode)
         }
       } catch (e) {

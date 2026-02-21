@@ -118,13 +118,13 @@ export async function setWxidConfig(wxid: string, configValue: WxidConfig): Prom
 }
 
 // 获取主题
-export async function getTheme(): Promise<'light' | 'dark'> {
+export async function getTheme(): Promise<'light' | 'dark' | 'system'> {
   const value = await config.get(CONFIG_KEYS.THEME)
-  return (value as 'light' | 'dark') || 'light'
+  return (value as 'light' | 'dark' | 'system') || 'light'
 }
 
 // 设置主题
-export async function setTheme(theme: 'light' | 'dark'): Promise<void> {
+export async function setTheme(theme: 'light' | 'dark' | 'system'): Promise<void> {
   await config.set(CONFIG_KEYS.THEME, theme)
 }
 

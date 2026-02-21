@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
 export type ThemeId = 'cloud-dancer' | 'corundum-blue' | 'kiwi-green' | 'spicy-red' | 'teal-water'
-export type ThemeMode = 'light' | 'dark'
+export type ThemeMode = 'light' | 'dark' | 'system'
 
 export interface ThemeInfo {
   id: ThemeId

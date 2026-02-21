@@ -7,7 +7,7 @@ import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
-  RotateCcw, Trash2, Plug, Check, Sun, Moon,
+  RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
   Palette, Database, Download, HardDrive, Info, RefreshCw, ChevronDown, Mic,
   ShieldCheck, Fingerprint, Lock, KeyRound, Bell, Globe, BarChart2
 } from 'lucide-react'
@@ -55,6 +55,14 @@ function SettingsPage() {
 
   const resetChatStore = useChatStore((state) => state.reset)
   const { currentTheme, themeMode, setTheme, setThemeMode } = useThemeStore()
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = (e: MediaQueryListEvent) => setSystemDark(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  const effectiveMode = themeMode === 'system' ? (systemDark ? 'dark' : 'light') : themeMode
   const clearAnalyticsStoreCache = useAnalyticsStore((state) => state.clearCache)
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('appearance')
@@ -993,11 +1001,14 @@ function SettingsPage() {
         <button className={`mode-btn ${themeMode === 'dark' ? 'active' : ''}`} onClick={() => setThemeMode('dark')}>
           <Moon size={16} /> 深色
         </button>
+        <button className={`mode-btn ${themeMode === 'system' ? 'active' : ''}`} onClick={() => setThemeMode('system')}>
+          <Monitor size={16} /> 跟随系统
+        </button>
       </div>
       <div className="theme-grid">
         {themes.map((theme) => (
           <div key={theme.id} className={`theme-card ${currentTheme === theme.id ? 'active' : ''}`} onClick={() => setTheme(theme.id)}>
-            <div className="theme-preview" style={{ background: themeMode === 'dark' ? 'linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%)' : `linear-gradient(135deg, ${theme.bgColor} 0%, ${theme.bgColor}dd 100%)` }}>
+            <div className="theme-preview" style={{ background: effectiveMode === 'dark' ? 'linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%)' : `linear-gradient(135deg, ${theme.bgColor} 0%, ${theme.bgColor}dd 100%)` }}>
               <div className="theme-accent" style={{ background: theme.primaryColor }} />
             </div>
             <div className="theme-info">
