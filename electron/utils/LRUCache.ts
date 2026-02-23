@@ -76,6 +76,27 @@ export class LRUCache<K, V> {
   }
 
   /**
+   * Get all values (for debugging)
+   */
+  values(): IterableIterator<V> {
+    return this.cache.values()
+  }
+
+  /**
+   * Get all entries (for iteration support)
+   */
+  entries(): IterableIterator<[K, V]> {
+    return this.cache.entries()
+  }
+
+  /**
+   * Make LRUCache iterable (for...of support)
+   */
+  [Symbol.iterator](): IterableIterator<[K, V]> {
+    return this.cache.entries()
+  }
+
+  /**
    * Force cleanup (optional method for explicit memory management)
    */
   cleanup(): void {
