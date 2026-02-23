@@ -458,8 +458,18 @@ export class VoiceTranscribeService {
 
         writer.on('error', (err) => {
           clearInterval(speedInterval)
+          // 确保在错误情况下也关闭文件句柄
+          writer.destroy()
           reject(err)
         })
+
+        response.on('error', (err) => {
+          clearInterval(speedInterval)
+          // 确保在响应错误时也关闭文件句柄
+          writer.destroy()
+          reject(err)
+        })
+
         response.pipe(writer)
       })
       request.on('error', reject)

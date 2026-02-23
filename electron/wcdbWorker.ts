@@ -118,7 +118,7 @@ if (parentPort) {
                     result = await core.closeMessageCursor(payload.cursor)
                     break
                 case 'execQuery':
-                    result = await core.execQuery(payload.kind, payload.path, payload.sql)
+                    result = await core.execQuery(payload.kind, payload.path, payload.sql, payload.params)
                     break
                 case 'getEmoticonCdnUrl':
                     result = await core.getEmoticonCdnUrl(payload.dbPath, payload.md5)

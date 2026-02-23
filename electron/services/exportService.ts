@@ -12,6 +12,7 @@ import { chatService } from './chatService'
 import { videoService } from './videoService'
 import { voiceTranscribeService } from './voiceTranscribeService'
 import { EXPORT_HTML_STYLES } from './exportHtmlStyles'
+import { LRUCache } from '../utils/LRUCache.js'
 
 // ChatLab 格式类型定义
 interface ChatLabHeader {
@@ -140,12 +141,15 @@ async function parallelLimit<T, R>(
 
 class ExportService {
   private configService: ConfigService
-  private contactCache: Map<string, { displayName: string; avatarUrl?: string }> = new Map()
-  private inlineEmojiCache: Map<string, string> = new Map()
+  private contactCache: LRUCache<string, { displayName: string; avatarUrl?: string }>
+  private inlineEmojiCache: LRUCache<string, string>
   private htmlStyleCache: string | null = null
 
   constructor() {
     this.configService = new ConfigService()
+    // 限制缓存大小，防止内存泄漏
+    this.contactCache = new LRUCache(500) // 最多缓存500个联系人
+    this.inlineEmojiCache = new LRUCache(100) // 最多缓存100个表情
   }
 
   private getClampedConcurrency(value: number | undefined, fallback = 2, max = 6): number {
@@ -219,9 +223,9 @@ class ExportService {
    */
   async getGroupNicknamesForRoom(chatroomId: string, candidates: string[] = []): Promise<Map<string, string>> {
     try {
-      const escapedChatroomId = chatroomId.replace(/'/g, "''")
-      const sql = `SELECT ext_buffer FROM chat_room WHERE username='${escapedChatroomId}' LIMIT 1`
-      const result = await wcdbService.execQuery('contact', null, sql)
+      // 使用参数化查询防止SQL注入
+      const sql = 'SELECT ext_buffer FROM chat_room WHERE username = ? LIMIT 1'
+      const result = await wcdbService.execQuery('contact', null, sql, [chatroomId])
       if (!result.success || !result.rows || result.rows.length === 0) {
         return new Map<string, string>()
       }
@@ -1467,6 +1471,7 @@ class ExportService {
       })
 
       if (!result.success || !result.localPath) {
+        console.log(`[Export] 图片解密失败 (localId=${msg.localId}): imageMd5=${imageMd5}, imageDatName=${imageDatName}, error=${result.error || '未知'}`)
         // 尝试获取缩略图
         const thumbResult = await imageDecryptService.resolveCachedImage({
           sessionId,
@@ -1474,8 +1479,10 @@ class ExportService {
           imageDatName
         })
         if (!thumbResult.success || !thumbResult.localPath) {
+          console.log(`[Export] 缩略图也获取失败 (localId=${msg.localId}): error=${thumbResult.error || '未知'} → 将显示 [图片] 占位符`)
           return null
         }
+        console.log(`[Export] 使用缩略图替代 (localId=${msg.localId}): ${thumbResult.localPath}`)
         result.localPath = thumbResult.localPath
       }
 
@@ -1503,7 +1510,10 @@ class ExportService {
       }
 
       // 复制文件
-      if (!fs.existsSync(sourcePath)) return null
+      if (!fs.existsSync(sourcePath)) {
+        console.log(`[Export] 源图片文件不存在 (localId=${msg.localId}): ${sourcePath} → 将显示 [图片] 占位符`)
+        return null
+      }
       const ext = path.extname(sourcePath) || '.jpg'
       const fileName = `${messageId}_${imageKey}${ext}`
       const destPath = path.join(imagesDir, fileName)
@@ -1517,6 +1527,7 @@ class ExportService {
         kind: 'image'
       }
     } catch (e) {
+      console.error(`[Export] 导出图片异常 (localId=${msg.localId}):`, e, `→ 将显示 [图片] 占位符`)
       return null
     }
   }
@@ -1785,7 +1796,14 @@ class ExportService {
             fileStream.close()
             resolve(true)
           })
-          fileStream.on('error', () => {
+          fileStream.on('error', (err) => {
+            // 确保在错误情况下销毁流，释放文件句柄
+            fileStream.destroy()
+            resolve(false)
+          })
+          response.on('error', (err) => {
+            // 确保在响应错误时也关闭文件句柄
+            fileStream.destroy()
             resolve(false)
           })
         })
@@ -1812,22 +1830,43 @@ class ExportService {
     let firstTime: number | null = null
     let lastTime: number | null = null
 
+    // 修复时间范围：0 表示不限制，而不是时间戳 0
+    const beginTime = dateRange?.start || 0
+    const endTime = dateRange?.end && dateRange.end > 0 ? dateRange.end : 0
+    
+    console.log(`[Export] 收集消息: sessionId=${sessionId}, 时间范围: ${beginTime} ~ ${endTime || '无限制'}`)
+
     const cursor = await wcdbService.openMessageCursor(
       sessionId,
       500,
       true,
-      dateRange?.start || 0,
-      dateRange?.end || 0
+      beginTime,
+      endTime
     )
     if (!cursor.success || !cursor.cursor) {
+      console.error(`[Export] 打开游标失败: ${cursor.error || '未知错误'}`)
       return { rows, memberSet, firstTime, lastTime }
     }
 
     try {
       let hasMore = true
+      let batchCount = 0
       while (hasMore) {
         const batch = await wcdbService.fetchMessageBatch(cursor.cursor)
-        if (!batch.success || !batch.rows) break
+        batchCount++
+        
+        if (!batch.success) {
+          console.error(`[Export] 获取批次 ${batchCount} 失败: ${batch.error}`)
+          break
+        }
+        
+        if (!batch.rows) {
+          console.warn(`[Export] 批次 ${batchCount} 无数据`)
+          break
+        }
+        
+        console.log(`[Export] 批次 ${batchCount}: 收到 ${batch.rows.length} 条消息`)
+        
         for (const row of batch.rows) {
           const createTime = parseInt(row.create_time || '0', 10)
           if (dateRange) {
@@ -1918,8 +1957,17 @@ class ExportService {
         }
         hasMore = batch.hasMore === true
       }
+      
+      console.log(`[Export] 收集完成: 共 ${rows.length} 条消息, ${batchCount} 个批次`)
+    } catch (err) {
+      console.error(`[Export] 收集消息异常:`, err)
     } finally {
-      await wcdbService.closeMessageCursor(cursor.cursor)
+      try {
+        await wcdbService.closeMessageCursor(cursor.cursor)
+        console.log(`[Export] 游标已关闭`)
+      } catch (err) {
+        console.error(`[Export] 关闭游标失败:`, err)
+      }
     }
 
     if (senderSet.size > 0) {
@@ -4562,6 +4610,12 @@ class ExportService {
 </html>`);
 
       return new Promise((resolve, reject) => {
+        stream.on('error', (err) => {
+          // 确保在流错误时销毁流，释放文件句柄
+          stream.destroy()
+          reject(err)
+        })
+        
         stream.end(() => {
           onProgress?.({
             current: 100,

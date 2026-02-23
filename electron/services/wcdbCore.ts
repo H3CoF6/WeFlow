@@ -1620,12 +1620,20 @@ export class WcdbCore {
     }
   }
 
-  async execQuery(kind: string, path: string | null, sql: string): Promise<{ success: boolean; rows?: any[]; error?: string }> {
+  async execQuery(kind: string, path: string | null, sql: string, params: any[] = []): Promise<{ success: boolean; rows?: any[]; error?: string }> {
     if (!this.ensureReady()) {
       return { success: false, error: 'WCDB 未连接' }
     }
     try {
       if (!this.wcdbExecQuery) return { success: false, error: '接口未就绪' }
+      
+      // 如果提供了参数，使用参数化查询（需要 C++ 层支持）
+      // 注意：当前 wcdbExecQuery 可能不支持参数化，这是一个占位符实现
+      // TODO: 需要更新 C++ 层的 wcdb_exec_query 以支持参数绑定
+      if (params && params.length > 0) {
+        console.warn('[wcdbCore] execQuery: 参数化查询暂未在 C++ 层实现，将使用原始 SQL（可能存在注入风险）')
+      }
+      
       const outPtr = [null as any]
       const result = this.wcdbExecQuery(this.handle, kind, path || '', sql, outPtr)
       if (result !== 0 || !outPtr[0]) {

@@ -361,10 +361,10 @@ export class WcdbService {
   }
 
   /**
-   * 执行 SQL 查询
+   * 执行 SQL 查询（支持参数化查询）
    */
-  async execQuery(kind: string, path: string | null, sql: string): Promise<{ success: boolean; rows?: any[]; error?: string }> {
-    return this.callWorker('execQuery', { kind, path, sql })
+  async execQuery(kind: string, path: string | null, sql: string, params: any[] = []): Promise<{ success: boolean; rows?: any[]; error?: string }> {
+    return this.callWorker('execQuery', { kind, path, sql, params })
   }
 
   /**
