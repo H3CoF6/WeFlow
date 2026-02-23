@@ -87,6 +87,11 @@ const keyService = new KeyService()
 let mainWindowReady = false
 let shouldShowMain = true
 
+// 更新下载状态管理（Issue #294 修复）
+let isDownloadInProgress = false
+let downloadProgressHandler: ((progress: any) => void) | null = null
+let downloadedHandler: (() => void) | null = null
+
 function createWindow(options: { autoShow?: boolean } = {}) {
   // 获取图标路径 - 打包后在 resources 目录
   const { autoShow = true } = options
@@ -617,22 +622,61 @@ function registerIpcHandlers() {
     if (!AUTO_UPDATE_ENABLED) {
       throw new Error('自动更新已暂时禁用')
     }
+
+    // 防止重复下载（Issue #294 修复）
+    if (isDownloadInProgress) {
+      throw new Error('更新正在下载中，请稍候')
+    }
+
+    isDownloadInProgress = true
     const win = BrowserWindow.fromWebContents(event.sender)
 
-    // 监听下载进度
-    autoUpdater.on('download-progress', (progress) => {
-      win?.webContents.send('app:downloadProgress', progress)
-    })
+    // 清理旧的监听器（Issue #294 修复：防止监听器泄漏）
+    if (downloadProgressHandler) {
+      autoUpdater.removeListener('download-progress', downloadProgressHandler)
+      downloadProgressHandler = null
+    }
+    if (downloadedHandler) {
+      autoUpdater.removeListener('update-downloaded', downloadedHandler)
+      downloadedHandler = null
+    }
 
-    // 下载完成后自动安装
-    autoUpdater.on('update-downloaded', () => {
+    // 创建新的监听器并保存引用
+    downloadProgressHandler = (progress) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('app:downloadProgress', progress)
+      }
+    }
+
+    downloadedHandler = () => {
+      console.log('[Update] 更新下载完成，准备安装')
+      if (downloadProgressHandler) {
+        autoUpdater.removeListener('download-progress', downloadProgressHandler)
+        downloadProgressHandler = null
+      }
+      downloadedHandler = null
+      isDownloadInProgress = false
       autoUpdater.quitAndInstall(false, true)
-    })
+    }
+
+    autoUpdater.on('download-progress', downloadProgressHandler)
+    autoUpdater.once('update-downloaded', downloadedHandler)
 
     try {
+      console.log('[Update] 开始下载更新...')
       await autoUpdater.downloadUpdate()
     } catch (error) {
-      console.error('下载更新失败:', error)
+      console.error('[Update] 下载更新失败:', error)
+      // 失败时清理状态和监听器
+      isDownloadInProgress = false
+      if (downloadProgressHandler) {
+        autoUpdater.removeListener('download-progress', downloadProgressHandler)
+        downloadProgressHandler = null
+      }
+      if (downloadedHandler) {
+        autoUpdater.removeListener('update-downloaded', downloadedHandler)
+        downloadedHandler = null
+      }
       throw error
     }
   })

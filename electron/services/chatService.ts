@@ -13,6 +13,7 @@ import { wcdbService } from './wcdbService'
 import { MessageCacheService } from './messageCacheService'
 import { ContactCacheService, ContactCacheEntry } from './contactCacheService'
 import { voiceTranscribeService } from './voiceTranscribeService'
+import { LRUCache } from '../utils/LRUCache.js'
 
 type HardlinkState = {
   db: Database.Database
@@ -114,6 +115,7 @@ class ChatService {
   private configService: ConfigService
   private connected = false
   private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number; startTime?: number; endTime?: number; ascending?: boolean; bufferedMessages?: any[] }> = new Map()
+  private messageCursorMutex: boolean = false
   private readonly messageBatchDefault = 50
   private avatarCache: Map<string, ContactCacheEntry>
   private readonly avatarCacheTtlMs = 10 * 60 * 1000
@@ -121,8 +123,8 @@ class ChatService {
   private hardlinkCache = new Map<string, HardlinkState>()
   private readonly contactCacheService: ContactCacheService
   private readonly messageCacheService: MessageCacheService
-  private voiceWavCache = new Map<string, Buffer>()
-  private voiceTranscriptCache = new Map<string, string>()
+  private voiceWavCache: LRUCache<string, Buffer>
+  private voiceTranscriptCache: LRUCache<string, string>
   private voiceTranscriptPending = new Map<string, Promise<{ success: boolean; transcript?: string; error?: string }>>()
   private transcriptCacheLoaded = false
   private transcriptCacheDirty = false
@@ -149,6 +151,9 @@ class ChatService {
     const persisted = this.contactCacheService.getAllEntries()
     this.avatarCache = new Map(Object.entries(persisted))
     this.messageCacheService = new MessageCacheService(this.configService.getCacheBasePath())
+    // 初始化LRU缓存，限制大小防止内存泄漏
+    this.voiceWavCache = new LRUCache(this.voiceWavCacheMaxEntries)
+    this.voiceTranscriptCache = new LRUCache(1000) // 最多缓存1000条转写记录
   }
 
   /**
@@ -728,8 +733,15 @@ class ChatService {
       }
 
       const batchSize = Math.max(1, limit || this.messageBatchDefault)
+      
+      // 使用互斥锁保护游标状态访问
+      while (this.messageCursorMutex) {
+        await new Promise(resolve => setTimeout(resolve, 1))
+      }
+      this.messageCursorMutex = true
+      
       let state = this.messageCursors.get(sessionId)
-
+      
       // 只在以下情况重新创建游标:
       // 1. 没有游标状态
       // 2. offset 为 0 (重新加载会话)
@@ -765,7 +777,8 @@ class ChatService {
 
         state = { cursor: cursorResult.cursor, fetched: 0, batchSize, startTime, endTime, ascending }
         this.messageCursors.set(sessionId, state)
-
+        this.messageCursorMutex = false
+        
         // 如果需要跳过消息(offset > 0),逐批获取但不返回
         // 注意：仅在 offset === 0 时重建游标最安全；
         // 当 startTime/endTime 变化导致重建时，offset 应由前端重置为 0
@@ -825,6 +838,10 @@ class ChatService {
       let rows: any[] = state.bufferedMessages || []
       state.bufferedMessages = undefined // Clear buffer after use
 
+      // Track actual hasMore status from C++ layer
+      // If we have buffered messages, we need to check if there's more data
+      let actualHasMore = rows.length > 0 // If buffer exists, assume there might be more
+
       // If buffer is not enough to fill a batch, try to fetch more
       // Or if buffer is empty, fetch a batch
       if (rows.length < batchSize) {
@@ -832,6 +849,7 @@ class ChatService {
         if (nextBatch.success && nextBatch.rows) {
           rows = rows.concat(nextBatch.rows)
           state.fetched += nextBatch.rows.length
+          actualHasMore = nextBatch.hasMore === true
         } else if (!nextBatch.success) {
           console.error('[ChatService] 获取消息批次失败:', nextBatch.error)
           // If we have some buffered rows, we can still return them? 
@@ -839,6 +857,7 @@ class ChatService {
           if (rows.length === 0) {
             return { success: false, error: nextBatch.error || '获取消息失败' }
           }
+          actualHasMore = false
         }
       }
 
@@ -849,13 +868,43 @@ class ChatService {
         // Next time offset will catch up or mismatch trigger reset.
       }
 
-      const hasMore = rows.length > 0 // Simplified hasMore check for now, can be improved
+      // Use actual hasMore from C++ layer, not simplified row count check
+      const hasMore = actualHasMore
 
       const normalized = this.normalizeMessageOrder(this.mapRowsToMessages(rows))
 
+      // 🔒 安全验证：过滤掉不属于当前 sessionId 的消息（防止 C++ 层或缓存错误）
+      const filtered = normalized.filter(msg => {
+        // 检查消息的 senderUsername 或 rawContent 中的 talker
+        // 群聊消息：senderUsername 是群成员，需要检查 _db_path 或上下文
+        // 单聊消息：senderUsername 应该是 sessionId 或自己
+        const isGroupChat = sessionId.includes('@chatroom')
+        
+        if (isGroupChat) {
+          // 群聊消息暂不验证（因为 senderUsername 是群成员，不是 sessionId）
+          return true
+        } else {
+          // 单聊消息：senderUsername 应该是 sessionId（对方）或为空/null（自己）
+          if (!msg.senderUsername || msg.senderUsername === sessionId) {
+            return true
+          }
+          // 如果 isSend 为 1，说明是自己发的，允许通过
+          if (msg.isSend === 1) {
+            return true
+          }
+          // 其他情况：可能是错误的消息
+          console.warn(`[ChatService] 检测到异常消息: sessionId=${sessionId}, senderUsername=${msg.senderUsername}, localId=${msg.localId}`)
+          return false
+        }
+      })
+
+      if (filtered.length < normalized.length) {
+        console.warn(`[ChatService] 过滤了 ${normalized.length - filtered.length} 条异常消息`)
+      }
+
       // 并发检查并修复缺失 CDN URL 的表情包
       const fixPromises: Promise<void>[] = []
-      for (const msg of normalized) {
+      for (const msg of filtered) {
         if (msg.localType === 47 && !msg.emojiCdnUrl && msg.emojiMd5) {
           fixPromises.push(this.fallbackEmoticon(msg))
         }
@@ -866,9 +915,12 @@ class ChatService {
       }
 
       state.fetched += rows.length
-      this.messageCacheService.set(sessionId, normalized)
-      return { success: true, messages: normalized, hasMore }
+      this.messageCursorMutex = false
+      
+      this.messageCacheService.set(sessionId, filtered)
+      return { success: true, messages: filtered, hasMore }
     } catch (e) {
+      this.messageCursorMutex = false
       console.error('ChatService: 获取消息失败:', e)
       return { success: false, error: String(e) }
     }
@@ -3698,10 +3750,7 @@ class ChatService {
 
   private cacheVoiceWav(cacheKey: string, wavData: Buffer): void {
     this.voiceWavCache.set(cacheKey, wavData)
-    if (this.voiceWavCache.size > this.voiceWavCacheMaxEntries) {
-      const oldestKey = this.voiceWavCache.keys().next().value
-      if (oldestKey) this.voiceWavCache.delete(oldestKey)
-    }
+    // LRU缓存会自动处理大小限制，无需手动清理
   }
 
   /** 获取持久化转写缓存文件路径 */

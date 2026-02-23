@@ -79,14 +79,14 @@ class AnalyticsService {
     const chunkSize = 200
     for (let i = 0; i < usernames.length; i += chunkSize) {
       const chunk = usernames.slice(i, i + chunkSize)
-      const inList = chunk.map((u) => `'${this.escapeSqlValue(u)}'`).join(',')
-      if (!inList) continue
+      // 使用参数化查询防止SQL注入
+      const placeholders = chunk.map(() => '?').join(',')
       const sql = `
         SELECT username, alias
         FROM contact
-        WHERE username IN (${inList})
+        WHERE username IN (${placeholders})
       `
-      const result = await wcdbService.execQuery('contact', null, sql)
+      const result = await wcdbService.execQuery('contact', null, sql, chunk)
       if (!result.success || !result.rows) continue
       for (const row of result.rows as Record<string, any>[]) {
         const username = row.username || ''

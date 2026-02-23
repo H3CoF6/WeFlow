@@ -100,6 +100,7 @@ class HttpService {
   private port: number = 5031
   private running: boolean = false
   private connections: Set<import('net').Socket> = new Set()
+  private connectionMutex: boolean = false
 
   constructor() {
     this.configService = ConfigService.getInstance()
@@ -120,9 +121,20 @@ class HttpService {
 
       // 跟踪所有连接，以便关闭时能强制断开
       this.server.on('connection', (socket) => {
-        this.connections.add(socket)
+        // 使用互斥锁防止并发修改
+        if (!this.connectionMutex) {
+          this.connectionMutex = true
+          this.connections.add(socket)
+          this.connectionMutex = false
+        }
+        
         socket.on('close', () => {
-          this.connections.delete(socket)
+          // 使用互斥锁防止并发修改
+          if (!this.connectionMutex) {
+            this.connectionMutex = true
+            this.connections.delete(socket)
+            this.connectionMutex = false
+          }
         })
       })
 
@@ -150,11 +162,20 @@ class HttpService {
   async stop(): Promise<void> {
     return new Promise((resolve) => {
       if (this.server) {
-        // 强制关闭所有活动连接
-        for (const socket of this.connections) {
-          socket.destroy()
-        }
+        // 使用互斥锁保护连接集合操作
+        this.connectionMutex = true
+        const socketsToClose = Array.from(this.connections)
         this.connections.clear()
+        this.connectionMutex = false
+        
+        // 强制关闭所有活动连接
+        for (const socket of socketsToClose) {
+          try {
+            socket.destroy()
+          } catch (err) {
+            console.error('[HttpService] Error destroying socket:', err)
+          }
+        }
 
         this.server.close(() => {
           this.running = false
