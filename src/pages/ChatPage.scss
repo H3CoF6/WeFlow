@@ -1581,6 +1581,23 @@
   position: relative;
   display: inline-block;
   -webkit-app-region: no-drag;
+
+  .media-badge.live {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    left: auto;
+    width: 24px;
+    height: 24px;
+    background: rgba(0, 0, 0, 0.4);
+    border-radius: 50%;
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    pointer-events: none;
+  }
 }
 
 .image-update-button {

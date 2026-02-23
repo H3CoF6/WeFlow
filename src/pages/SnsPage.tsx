@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback } from 'react'
 import { RefreshCw, Search, X, Download, FolderOpen, FileJson, FileText, Image, CheckCircle, AlertCircle, Calendar, Users, Info, ChevronLeft, ChevronRight } from 'lucide-react'
-import { ImagePreview } from '../components/ImagePreview'
 import JumpToDateDialog from '../components/JumpToDateDialog'
 import './SnsPage.scss'
 import { SnsPost } from '../types/sns'
@@ -32,7 +31,6 @@ export default function SnsPage() {
 
     // UI states
     const [showJumpDialog, setShowJumpDialog] = useState(false)
-    const [previewImage, setPreviewImage] = useState<{ src: string, isVideo?: boolean, liveVideoPath?: string } | null>(null)
     const [debugPost, setDebugPost] = useState<SnsPost | null>(null)
 
     // 导出相关状态
@@ -332,7 +330,13 @@ export default function SnsPage() {
                             <SnsPostItem
                                 key={post.id}
                                 post={post}
-                                onPreview={(src, isVideo, liveVideoPath) => setPreviewImage({ src, isVideo, liveVideoPath })}
+                                onPreview={(src, isVideo, liveVideoPath) => {
+                                    if (isVideo) {
+                                        void window.electronAPI.window.openVideoPlayerWindow(src)
+                                    } else {
+                                        void window.electronAPI.window.openImageViewerWindow(src, liveVideoPath || undefined)
+                                    }
+                                }}
                                 onDebug={(p) => setDebugPost(p)}
                             />
                         ))}
@@ -394,15 +398,6 @@ export default function SnsPage() {
             />
 
             {/* Dialogs and Overlays */}
-            {previewImage && (
-                <ImagePreview
-                    src={previewImage.src}
-                    isVideo={previewImage.isVideo}
-                    liveVideoPath={previewImage.liveVideoPath}
-                    onClose={() => setPreviewImage(null)}
-                />
-            )}
-
             <JumpToDateDialog
                 isOpen={showJumpDialog}
                 onClose={() => setShowJumpDialog(false)}

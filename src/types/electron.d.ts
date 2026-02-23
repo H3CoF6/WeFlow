@@ -11,7 +11,7 @@ export interface ElectronAPI {
     setTitleBarOverlay: (options: { symbolColor: string }) => void
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) => Promise<void>
     resizeToFitVideo: (videoWidth: number, videoHeight: number) => Promise<void>
-    openImageViewerWindow: (imagePath: string) => Promise<void>
+    openImageViewerWindow: (imagePath: string, liveVideoPath?: string) => Promise<void>
     openChatHistoryWindow: (sessionId: string, messageId: number) => Promise<boolean>
   }
   config: {
@@ -125,7 +125,7 @@ export interface ElectronAPI {
 
   image: {
     decrypt: (payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; force?: boolean }) => Promise<{ success: boolean; localPath?: string; error?: string }>
-    resolveCache: (payload: { sessionId?: string; imageMd5?: string; imageDatName?: string }) => Promise<{ success: boolean; localPath?: string; hasUpdate?: boolean; error?: string }>
+    resolveCache: (payload: { sessionId?: string; imageMd5?: string; imageDatName?: string }) => Promise<{ success: boolean; localPath?: string; hasUpdate?: boolean; liveVideoPath?: string; error?: string }>
     preload: (payloads: Array<{ sessionId?: string; imageMd5?: string; imageDatName?: string }>) => Promise<boolean>
     onUpdateAvailable: (callback: (payload: { cacheKey: string; imageMd5?: string; imageDatName?: string }) => void) => () => void
     onCacheResolved: (callback: (payload: { cacheKey: string; imageMd5?: string; imageDatName?: string; localPath: string }) => void) => () => void

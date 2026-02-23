@@ -45,6 +45,7 @@ type DecryptResult = {
   localPath?: string
   error?: string
   isThumb?: boolean  // 是否是缩略图（没有高清图时返回缩略图）
+  liveVideoPath?: string  // 实况照片的视频路径
 }
 
 type HardlinkState = {
@@ -61,6 +62,7 @@ export class ImageDecryptService {
   private cacheIndexed = false
   private cacheIndexing: Promise<void> | null = null
   private updateFlags = new Map<string, boolean>()
+  private noLiveSet = new Set<string>() // 已确认无 live 视频的图片路径
 
   private logInfo(message: string, meta?: Record<string, unknown>): void {
     if (!this.configService.get('logEnabled')) return
@@ -116,8 +118,9 @@ export class ImageDecryptService {
         } else {
           this.updateFlags.delete(key)
         }
+        const liveVideoPath = isThumb ? undefined : this.checkLiveVideoCache(cached)
         this.emitCacheResolved(payload, key, dataUrl || this.filePathToUrl(cached))
-        return { success: true, localPath: dataUrl || this.filePathToUrl(cached), hasUpdate }
+        return { success: true, localPath: dataUrl || this.filePathToUrl(cached), hasUpdate, liveVideoPath }
       }
       if (cached && !this.isImageFile(cached)) {
         this.resolvedCache.delete(key)
@@ -136,8 +139,9 @@ export class ImageDecryptService {
         } else {
           this.updateFlags.delete(key)
         }
+        const liveVideoPath = isThumb ? undefined : this.checkLiveVideoCache(existing)
         this.emitCacheResolved(payload, key, dataUrl || this.filePathToUrl(existing))
-        return { success: true, localPath: dataUrl || this.filePathToUrl(existing), hasUpdate }
+        return { success: true, localPath: dataUrl || this.filePathToUrl(existing), hasUpdate, liveVideoPath }
       }
     }
     this.logInfo('未找到缓存', { md5: payload.imageMd5, datName: payload.imageDatName })
@@ -156,8 +160,9 @@ export class ImageDecryptService {
       if (cached && existsSync(cached) && this.isImageFile(cached)) {
         const dataUrl = this.fileToDataUrl(cached)
         const localPath = dataUrl || this.filePathToUrl(cached)
+        const liveVideoPath = this.isThumbnailPath(cached) ? undefined : this.checkLiveVideoCache(cached)
         this.emitCacheResolved(payload, cacheKey, localPath)
-        return { success: true, localPath }
+        return { success: true, localPath, liveVideoPath }
       }
       if (cached && !this.isImageFile(cached)) {
         this.resolvedCache.delete(cacheKey)
@@ -235,8 +240,9 @@ export class ImageDecryptService {
           const dataUrl = this.fileToDataUrl(existing)
           const localPath = dataUrl || this.filePathToUrl(existing)
           const isThumb = this.isThumbnailPath(existing)
+          const liveVideoPath = isThumb ? undefined : this.checkLiveVideoCache(existing)
           this.emitCacheResolved(payload, cacheKey, localPath)
-          return { success: true, localPath, isThumb }
+          return { success: true, localPath, isThumb, liveVideoPath }
         }
       }
 
@@ -296,7 +302,15 @@ export class ImageDecryptService {
       const dataUrl = this.bufferToDataUrl(decrypted, finalExt)
       const localPath = dataUrl || this.filePathToUrl(outputPath)
       this.emitCacheResolved(payload, cacheKey, localPath)
-      return { success: true, localPath, isThumb }
+
+      // 检测实况照片（Motion Photo）
+      let liveVideoPath: string | undefined
+      if (!isThumb && (finalExt === '.jpg' || finalExt === '.jpeg')) {
+        const videoPath = await this.extractMotionPhotoVideo(outputPath, decrypted)
+        if (videoPath) liveVideoPath = this.filePathToUrl(videoPath)
+      }
+
+      return { success: true, localPath, isThumb, liveVideoPath }
     } catch (e) {
       this.logError('解密失败', e, { md5: payload.imageMd5, datName: payload.imageDatName })
       return { success: false, error: String(e) }
@@ -1679,6 +1693,76 @@ export class ImageDecryptService {
     })
 
     return mostCommonKey
+  }
+
+  /**
+   * 检查图片对应的 live 视频缓存，返回 file:// URL 或 undefined
+   * 已确认无 live 的路径会被记录，下次直接跳过
+   */
+  private checkLiveVideoCache(imagePath: string): string | undefined {
+    if (this.noLiveSet.has(imagePath)) return undefined
+    const livePath = imagePath.replace(/\.(jpg|jpeg|png)$/i, '_live.mp4')
+    if (existsSync(livePath)) return this.filePathToUrl(livePath)
+    this.noLiveSet.add(imagePath)
+    return undefined
+  }
+
+  /**
+   * 检测并分离 Motion Photo（实况照片）
+   * Google Motion Photo = JPEG + MP4 拼接在一起
+   * 返回视频文件路径，如果不是实况照片则返回 null
+   */
+  private async extractMotionPhotoVideo(imagePath: string, imageBuffer: Buffer): Promise<string | null> {
+    // 只处理 JPEG 文件
+    if (imageBuffer.length < 8) return null
+    if (imageBuffer[0] !== 0xff || imageBuffer[1] !== 0xd8) return null
+
+    // 从末尾向前搜索 MP4 ftyp 原子签名
+    // ftyp 原子结构: [4字节大小][ftyp(66 74 79 70)][品牌...]
+    // 实际起始位置在 ftyp 前4字节（大小字段）
+    const ftypSig = [0x66, 0x74, 0x79, 0x70] // 'ftyp'
+    let videoOffset: number | null = null
+
+    const searchEnd = Math.max(0, imageBuffer.length - 8)
+    for (let i = searchEnd; i > 0; i--) {
+      if (imageBuffer[i] === ftypSig[0] &&
+        imageBuffer[i + 1] === ftypSig[1] &&
+        imageBuffer[i + 2] === ftypSig[2] &&
+        imageBuffer[i + 3] === ftypSig[3]) {
+        // ftyp 前4字节是 box size，实际 MP4 从这里开始
+        videoOffset = i - 4
+        break
+      }
+    }
+
+    // 备用：从 XMP 元数据中读取偏移量
+    if (videoOffset === null || videoOffset <= 0) {
+      try {
+        const text = imageBuffer.toString('latin1')
+        const match = text.match(/MediaDataOffset="(\d+)"/i) || text.match(/MicroVideoOffset="(\d+)"/i)
+        if (match) {
+          const offset = parseInt(match[1], 10)
+          if (offset > 0 && offset < imageBuffer.length) {
+            videoOffset = imageBuffer.length - offset
+          }
+        }
+      } catch { }
+    }
+
+    if (videoOffset === null || videoOffset <= 100) return null
+
+    // 验证视频部分确实以有效 MP4 数据开头
+    const videoStart = imageBuffer[videoOffset + 4] === 0x66 &&
+      imageBuffer[videoOffset + 5] === 0x74 &&
+      imageBuffer[videoOffset + 6] === 0x79 &&
+      imageBuffer[videoOffset + 7] === 0x70
+    if (!videoStart) return null
+
+    // 写出视频文件
+    const videoPath = imagePath.replace(/\.(jpg|jpeg|png)$/i, '_live.mp4')
+    const videoBuffer = imageBuffer.slice(videoOffset)
+    await writeFile(videoPath, videoBuffer)
+    return videoPath
   }
 
   /**

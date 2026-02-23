@@ -7,6 +7,7 @@ import { useBatchTranscribeStore } from '../stores/batchTranscribeStore'
 import type { ChatSession, Message } from '../types/models'
 import { getEmojiPath } from 'wechat-emojis'
 import { VoiceTranscribeDialog } from '../components/VoiceTranscribeDialog'
+import { LivePhotoIcon } from '../components/LivePhotoIcon'
 import { AnimatedStreamingText } from '../components/AnimatedStreamingText'
 import JumpToDateDialog from '../components/JumpToDateDialog'
 import * as configService from '../services/config'
@@ -2625,6 +2626,7 @@ function MessageBubble({
   const [imageInView, setImageInView] = useState(false)
   const imageForceHdAttempted = useRef<string | null>(null)
   const imageForceHdPending = useRef(false)
+  const [imageLiveVideoPath, setImageLiveVideoPath] = useState<string | undefined>(undefined)
   const [voiceError, setVoiceError] = useState(false)
   const [voiceLoading, setVoiceLoading] = useState(false)
   const [isVoicePlaying, setIsVoicePlaying] = useState(false)
@@ -2853,6 +2855,7 @@ function MessageBubble({
           imageDataUrlCache.set(imageCacheKey, result.localPath)
           setImageLocalPath(result.localPath)
           setImageHasUpdate(false)
+          if (result.liveVideoPath) setImageLiveVideoPath(result.liveVideoPath)
           return
         }
       }
@@ -2920,7 +2923,7 @@ function MessageBubble({
       sessionId: session.username,
       imageMd5: message.imageMd5 || undefined,
       imageDatName: message.imageDatName
-    }).then((result: { success: boolean; localPath?: string; hasUpdate?: boolean; error?: string }) => {
+    }).then((result: { success: boolean; localPath?: string; hasUpdate?: boolean; liveVideoPath?: string; error?: string }) => {
       if (cancelled) return
       if (result.success && result.localPath) {
         imageDataUrlCache.set(imageCacheKey, result.localPath)
@@ -2928,6 +2931,7 @@ function MessageBubble({
           setImageLocalPath(result.localPath)
           setImageError(false)
         }
+        if (result.liveVideoPath) setImageLiveVideoPath(result.liveVideoPath)
         setImageHasUpdate(Boolean(result.hasUpdate))
       }
     }).catch(() => { })
@@ -3423,14 +3427,17 @@ function MessageBubble({
                   alt="图片"
                   className="image-message"
                   onClick={() => {
-                    if (imageHasUpdate) {
-                      void requestImageDecrypt(true, true)
-                    }
-                    void window.electronAPI.window.openImageViewerWindow(imageLocalPath)
+                    if (imageHasUpdate) void requestImageDecrypt(true, true)
+                    void window.electronAPI.window.openImageViewerWindow(imageLocalPath!, imageLiveVideoPath || undefined)
                   }}
                   onLoad={() => setImageError(false)}
                   onError={() => setImageError(true)}
                 />
+                {imageLiveVideoPath && (
+                  <div className="media-badge live">
+                    <LivePhotoIcon size={14} />
+                  </div>
+                )}
               </div>
             </>
           )}

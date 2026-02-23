@@ -402,7 +402,7 @@ function createVideoPlayerWindow(videoPath: string, videoWidth?: number, videoHe
 /**
  * 创建独立的图片查看窗口
  */
-function createImageViewerWindow(imagePath: string) {
+function createImageViewerWindow(imagePath: string, liveVideoPath?: string) {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
   const iconPath = isDev
     ? join(__dirname, '../public/icon.ico')
@@ -435,7 +435,8 @@ function createImageViewerWindow(imagePath: string) {
     win.show()
   })
 
-  const imageParam = `imagePath=${encodeURIComponent(imagePath)}`
+  let imageParam = `imagePath=${encodeURIComponent(imagePath)}`
+  if (liveVideoPath) imageParam += `&liveVideoPath=${encodeURIComponent(liveVideoPath)}`
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/image-viewer-window?${imageParam}`)
@@ -1163,8 +1164,18 @@ function registerIpcHandlers() {
   })
 
   // 打开图片查看窗口
-  ipcMain.handle('window:openImageViewerWindow', (_, imagePath: string) => {
-    createImageViewerWindow(imagePath)
+  ipcMain.handle('window:openImageViewerWindow', async (_, imagePath: string, liveVideoPath?: string) => {
+    // 如果是 dataUrl，写入临时文件
+    if (imagePath.startsWith('data:')) {
+      const commaIdx = imagePath.indexOf(',')
+      const meta = imagePath.slice(5, commaIdx) // e.g. "image/jpeg;base64"
+      const ext = meta.split('/')[1]?.split(';')[0] || 'jpg'
+      const tmpPath = join(app.getPath('temp'), `weflow_preview_${Date.now()}.${ext}`)
+      await writeFile(tmpPath, Buffer.from(imagePath.slice(commaIdx + 1), 'base64'))
+      createImageViewerWindow(`file://${tmpPath.replace(/\\/g, '/')}`, liveVideoPath)
+    } else {
+      createImageViewerWindow(imagePath, liveVideoPath)
+    }
   })
 
   // 完成引导，关闭引导窗口并显示主窗口

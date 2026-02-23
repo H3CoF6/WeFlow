@@ -2,15 +2,20 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { ZoomIn, ZoomOut, RotateCw, RotateCcw } from 'lucide-react'
+import { LivePhotoIcon } from '../components/LivePhotoIcon'
 import './ImageWindow.scss'
 
 export default function ImageWindow() {
     const [searchParams] = useSearchParams()
     const imagePath = searchParams.get('imagePath')
+    const liveVideoPath = searchParams.get('liveVideoPath')
+    const [showLive, setShowLive] = useState(false)
+    const videoRef = useRef<HTMLVideoElement>(null)
     const [scale, setScale] = useState(1)
     const [rotation, setRotation] = useState(0)
     const [position, setPosition] = useState({ x: 0, y: 0 })
     const [initialScale, setInitialScale] = useState(1)
+    const [imgNatural, setImgNatural] = useState({ w: 0, h: 0 })
     const viewportRef = useRef<HTMLDivElement>(null)
     
     // 使用 ref 存储拖动状态，避免闭包问题
@@ -39,6 +44,7 @@ export default function ImageWindow() {
         const img = e.currentTarget
         const naturalWidth = img.naturalWidth
         const naturalHeight = img.naturalHeight
+        setImgNatural({ w: naturalWidth, h: naturalHeight })
         
         if (viewportRef.current) {
             const viewportWidth = viewportRef.current.clientWidth * 0.9
@@ -131,6 +137,23 @@ export default function ImageWindow() {
             <div className="title-bar">
                 <div className="window-drag-area"></div>
                 <div className="title-bar-controls">
+                    {liveVideoPath && (
+                        <button
+                            onClick={() => {
+                                const next = !showLive
+                                setShowLive(next)
+                                if (next && videoRef.current) {
+                                    videoRef.current.currentTime = 0
+                                    videoRef.current.play()
+                                }
+                            }}
+                            title={showLive ? '显示照片' : '播放实况'}
+                            className={showLive ? 'active' : ''}
+                        >
+                            <LivePhotoIcon size={16} />
+                            <span style={{ fontSize: 13, marginLeft: 4 }}>Live</span>
+                        </button>
+                    )}
                     <button onClick={handleZoomOut} title="缩小 (-)"><ZoomOut size={16} /></button>
                     <span className="scale-text">{Math.round(displayScale * 100)}%</span>
                     <button onClick={handleZoomIn} title="放大 (+)"><ZoomIn size={16} /></button>
@@ -140,18 +163,35 @@ export default function ImageWindow() {
                 </div>
             </div>
 
-            <div 
-                className="image-viewport" 
+            <div
+                className="image-viewport"
                 ref={viewportRef}
                 onWheel={handleWheel}
                 onDoubleClick={handleDoubleClick}
                 onMouseDown={handleMouseDown}
             >
+                {liveVideoPath && (
+                    <video
+                        ref={videoRef}
+                        src={liveVideoPath}
+                        width={imgNatural.w || undefined}
+                        height={imgNatural.h || undefined}
+                        style={{
+                            transform: `translate(${position.x}px, ${position.y}px) scale(${displayScale}) rotate(${rotation}deg)`,
+                            position: showLive ? 'relative' : 'absolute',
+                            opacity: showLive ? 1 : 0,
+                            pointerEvents: showLive ? 'auto' : 'none'
+                        }}
+                        onEnded={() => setShowLive(false)}
+                    />
+                )}
                 <img
                     src={imagePath}
                     alt="Preview"
                     style={{
-                        transform: `translate(${position.x}px, ${position.y}px) scale(${displayScale}) rotate(${rotation}deg)`
+                        transform: `translate(${position.x}px, ${position.y}px) scale(${displayScale}) rotate(${rotation}deg)`,
+                        opacity: showLive ? 0 : 1,
+                        position: showLive ? 'absolute' : 'relative'
                     }}
                     onLoad={handleImageLoad}
                     draggable={false}
