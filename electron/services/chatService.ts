@@ -838,6 +838,10 @@ class ChatService {
       let rows: any[] = state.bufferedMessages || []
       state.bufferedMessages = undefined // Clear buffer after use
 
+      // Track actual hasMore status from C++ layer
+      // If we have buffered messages, we need to check if there's more data
+      let actualHasMore = rows.length > 0 // If buffer exists, assume there might be more
+
       // If buffer is not enough to fill a batch, try to fetch more
       // Or if buffer is empty, fetch a batch
       if (rows.length < batchSize) {
@@ -845,6 +849,7 @@ class ChatService {
         if (nextBatch.success && nextBatch.rows) {
           rows = rows.concat(nextBatch.rows)
           state.fetched += nextBatch.rows.length
+          actualHasMore = nextBatch.hasMore === true
         } else if (!nextBatch.success) {
           console.error('[ChatService] 获取消息批次失败:', nextBatch.error)
           // If we have some buffered rows, we can still return them? 
@@ -852,6 +857,7 @@ class ChatService {
           if (rows.length === 0) {
             return { success: false, error: nextBatch.error || '获取消息失败' }
           }
+          actualHasMore = false
         }
       }
 
@@ -862,13 +868,43 @@ class ChatService {
         // Next time offset will catch up or mismatch trigger reset.
       }
 
-      const hasMore = rows.length > 0 // Simplified hasMore check for now, can be improved
+      // Use actual hasMore from C++ layer, not simplified row count check
+      const hasMore = actualHasMore
 
       const normalized = this.normalizeMessageOrder(this.mapRowsToMessages(rows))
 
+      // 🔒 安全验证：过滤掉不属于当前 sessionId 的消息（防止 C++ 层或缓存错误）
+      const filtered = normalized.filter(msg => {
+        // 检查消息的 senderUsername 或 rawContent 中的 talker
+        // 群聊消息：senderUsername 是群成员，需要检查 _db_path 或上下文
+        // 单聊消息：senderUsername 应该是 sessionId 或自己
+        const isGroupChat = sessionId.includes('@chatroom')
+        
+        if (isGroupChat) {
+          // 群聊消息暂不验证（因为 senderUsername 是群成员，不是 sessionId）
+          return true
+        } else {
+          // 单聊消息：senderUsername 应该是 sessionId（对方）或为空/null（自己）
+          if (!msg.senderUsername || msg.senderUsername === sessionId) {
+            return true
+          }
+          // 如果 isSend 为 1，说明是自己发的，允许通过
+          if (msg.isSend === 1) {
+            return true
+          }
+          // 其他情况：可能是错误的消息
+          console.warn(`[ChatService] 检测到异常消息: sessionId=${sessionId}, senderUsername=${msg.senderUsername}, localId=${msg.localId}`)
+          return false
+        }
+      })
+
+      if (filtered.length < normalized.length) {
+        console.warn(`[ChatService] 过滤了 ${normalized.length - filtered.length} 条异常消息`)
+      }
+
       // 并发检查并修复缺失 CDN URL 的表情包
       const fixPromises: Promise<void>[] = []
-      for (const msg of normalized) {
+      for (const msg of filtered) {
         if (msg.localType === 47 && !msg.emojiCdnUrl && msg.emojiMd5) {
           fixPromises.push(this.fallbackEmoticon(msg))
         }
@@ -881,8 +917,8 @@ class ChatService {
       state.fetched += rows.length
       this.messageCursorMutex = false
       
-      this.messageCacheService.set(sessionId, normalized)
-      return { success: true, messages: normalized, hasMore }
+      this.messageCacheService.set(sessionId, filtered)
+      return { success: true, messages: filtered, hasMore }
     } catch (e) {
       this.messageCursorMutex = false
       console.error('ChatService: 获取消息失败:', e)
