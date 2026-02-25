@@ -1047,6 +1047,7 @@
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid var(--border-color);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 
   &:hover {
     background: var(--bg-hover);
@@ -3107,7 +3108,7 @@
   .chat-record-message,
   .miniapp-message,
   .appmsg-rich-card {
-    background: rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.25);
 
     .card-name,
     .miniapp-title,
@@ -3618,11 +3619,12 @@
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: var(--bg-primary); // 添加底色
+  background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 
   &:hover {
     background: var(--bg-hover);
@@ -3672,12 +3674,13 @@
 
 // 聊天记录消息外观
 .chat-record-message {
-  background: var(--bg-primary); // 添加底色
+  background: var(--card-bg) !important;
   border: 1px solid var(--border-color);
   border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 
   &:hover {
-    background: var(--bg-hover);
+    background: var(--bg-hover) !important;
   }
 
   .chat-record-list {
@@ -3710,13 +3713,15 @@
 .official-message {
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
+  background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
   transition: all 0.2s ease;
+  min-width: 240px;
   max-width: 320px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 
   &:hover {
     background: var(--bg-hover);

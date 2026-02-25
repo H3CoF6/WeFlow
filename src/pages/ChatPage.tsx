@@ -3987,8 +3987,12 @@ function MessageBubble({
       const label = raw.match(/label="([^"]*)"/)?.[1] || message.locationLabel || ''
       const lat = parseFloat(raw.match(/x="([^"]*)"/)?.[1] || String(message.locationLat || 0))
       const lng = parseFloat(raw.match(/y="([^"]*)"/)?.[1] || String(message.locationLng || 0))
+      const zoom = 15
+      const tileX = Math.floor((lng + 180) / 360 * Math.pow(2, zoom))
+      const latRad = lat * Math.PI / 180
+      const tileY = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * Math.pow(2, zoom))
       const mapTileUrl = (lat && lng)
-        ? `https://restapi.amap.com/v3/staticmap?location=${lng},${lat}&zoom=15&size=280*100&markers=mid,,A:${lng},${lat}&key=e1dedc6bfbb8413ab2185e7a0e21f0a1`
+        ? `https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x=${tileX}&y=${tileY}&z=${zoom}`
         : ''
       return (
         <div className="location-message" onClick={() => window.electronAPI.shell.openExternal(`https://uri.amap.com/marker?position=${lng},${lat}&name=${encodeURIComponent(poiname || label)}`)}>
@@ -4039,6 +4043,7 @@ function MessageBubble({
       const thumbUrl = message.linkThumb || message.appMsgThumbUrl || q('thumburl') || q('cdnthumburl') || q('cover') || q('coverurl')
       const musicUrl = message.appMsgMusicUrl || message.appMsgDataUrl || q('musicurl') || q('playurl') || q('dataurl') || q('lowurl')
       const sourceName = message.appMsgSourceName || q('sourcename')
+      const sourceDisplayName = q('sourcedisplayname') || ''
       const appName = message.appMsgAppName || q('appname')
       const sourceUsername = message.appMsgSourceUsername || q('sourceusername')
       const finderName =
@@ -4066,8 +4071,13 @@ function MessageBubble({
 
       // 对视频号提取真实标题，避免出现 "当前版本不支持该内容"
       let displayTitle = title
-      if (kind === 'finder' && title.includes('不支持')) {
-        displayTitle = desc || ''
+      if (kind === 'finder' && (!displayTitle || displayTitle.includes('不支持'))) {
+        try {
+          const d = new DOMParser().parseFromString(rawXml, 'text/xml')
+          displayTitle = d.querySelector('finderFeed desc')?.textContent?.trim() || desc || ''
+        } catch {
+          displayTitle = desc || ''
+        }
       }
 
       const openExternal = (e: React.MouseEvent, nextUrl?: string) => {
@@ -4224,8 +4234,8 @@ function MessageBubble({
       }
 
       if (kind === 'official-link') {
-        const authorAvatar = q('publisher > headimg') || q('brand_info > headimgurl') || q('appmsg > avatar') || message.cardAvatarUrl
-        const authorName = q('publisher > nickname') || sourceName || appName || '公众号'
+        const authorAvatar = q('publisher > headimg') || q('brand_info > headimgurl') || q('appmsg > avatar') || q('headimgurl') || message.cardAvatarUrl
+        const authorName = sourceDisplayName || q('publisher > nickname') || sourceName || appName || '公众号'
         const coverPic = q('mmreader > category > item > cover') || thumbUrl
         const digest = q('mmreader > category > item > digest') || desc
         const articleTitle = q('mmreader > category > item > title') || title
