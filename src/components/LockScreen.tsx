@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import * as configService from '../services/config'
 import { ArrowRight, Fingerprint, Lock, ScanFace, ShieldCheck } from 'lucide-react'
 import './LockScreen.scss'
 
@@ -7,14 +6,6 @@ interface LockScreenProps {
     onUnlock: () => void
     avatar?: string
     useHello?: boolean
-}
-
-async function sha256(message: string) {
-    const msgBuffer = new TextEncoder().encode(message)
-    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer)
-    const hashArray = Array.from(new Uint8Array(hashBuffer))
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-    return hashHex
 }
 
 export default function LockScreen({ onUnlock, avatar, useHello = false }: LockScreenProps) {
@@ -49,19 +40,9 @@ export default function LockScreen({ onUnlock, avatar, useHello = false }: LockS
 
     const quickStartHello = async () => {
         try {
-            // 如果父组件已经告诉我们要用 Hello，直接开始，不等待 IPC
-            let shouldUseHello = useHello
-
-            // 为了稳健，如果 prop 没传（虽然现在都传了），再 check 一次 config
-            if (!shouldUseHello) {
-                shouldUseHello = await configService.getAuthUseHello()
-            }
-
-            if (shouldUseHello) {
-                // 标记为可用，显示按钮
+            if (useHello) {
                 setHelloAvailable(true)
                 setShowHello(true)
-                // 立即执行验证 (0延迟)
                 verifyHello()
             }
         } catch (e) {
@@ -96,25 +77,19 @@ export default function LockScreen({ onUnlock, avatar, useHello = false }: LockS
         e?.preventDefault()
         if (!password || isUnlocked) return
 
-        // 如果正在进行 Hello 验证，它会自动失败或被取代，UI上不用特意取消
-        // 因为 native 调用是模态的或者独立的，我们只要让 JS 状态不对锁住即可
-
-        // 不再检查 isVerifying，因为我们允许打断 Hello
         setIsVerifying(true)
         setError('')
 
         try {
-            const storedHash = await configService.getAuthPassword()
-            const inputHash = await sha256(password)
+            // 发送原始密码到主进程，由主进程验证并解密密钥
+            const result = await window.electronAPI.auth.unlock(password)
 
-            if (inputHash === storedHash) {
+            if (result.success) {
                 handleUnlock()
             } else {
-                setError('密码错误')
+                setError(result.error || '密码错误')
                 setPassword('')
                 setIsVerifying(false)
-                // 如果密码错误，是否重新触发 Hello? 
-                // 用户可能想重试密码，暂时不自动触发
             }
         } catch (e) {
             setError('验证失败')

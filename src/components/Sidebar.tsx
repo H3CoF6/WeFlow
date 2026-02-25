@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { Home, MessageSquare, BarChart3, Users, FileText, Database, Settings, ChevronLeft, ChevronRight, Download, Aperture, UserCircle, Lock } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
-import * as configService from '../services/config'
+
 import './Sidebar.scss'
 
 function Sidebar() {
@@ -12,7 +12,7 @@ function Sidebar() {
   const setLocked = useAppStore(state => state.setLocked)
 
   useEffect(() => {
-    configService.getAuthEnabled().then(setAuthEnabled)
+    window.electronAPI.auth.verifyEnabled().then(setAuthEnabled)
   }, [])
 
   const isActive = (path: string) => {

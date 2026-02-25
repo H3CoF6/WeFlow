@@ -264,7 +264,7 @@ export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDeb
 
                 {showMediaGrid && (
                     <div className="post-media-container">
-                        <SnsMediaGrid mediaList={post.media} onPreview={onPreview} onMediaDeleted={[1, 54].includes(post.type ?? 0) ? () => setMediaDeleted(true) : undefined} />
+                        <SnsMediaGrid mediaList={post.media} postType={post.type} onPreview={onPreview} onMediaDeleted={[1, 54].includes(post.type ?? 0) ? () => setMediaDeleted(true) : undefined} />
                     </div>
                 )}
 

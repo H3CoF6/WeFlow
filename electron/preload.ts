@@ -24,7 +24,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 认证
   auth: {
-    hello: (message?: string) => ipcRenderer.invoke('auth:hello', message)
+    hello: (message?: string) => ipcRenderer.invoke('auth:hello', message),
+    verifyEnabled: () => ipcRenderer.invoke('auth:verifyEnabled'),
+    unlock: (password: string) => ipcRenderer.invoke('auth:unlock', password),
+    enableLock: (password: string) => ipcRenderer.invoke('auth:enableLock', password),
+    disableLock: (password: string) => ipcRenderer.invoke('auth:disableLock', password),
+    changePassword: (oldPassword: string, newPassword: string) => ipcRenderer.invoke('auth:changePassword', oldPassword, newPassword),
+    setHelloSecret: (password: string) => ipcRenderer.invoke('auth:setHelloSecret', password),
+    clearHelloSecret: () => ipcRenderer.invoke('auth:clearHelloSecret'),
+    isLockMode: () => ipcRenderer.invoke('auth:isLockMode')
   },
 
 
@@ -146,6 +154,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getVoiceData: (sessionId: string, msgId: string, createTime?: number, serverId?: string | number) =>
       ipcRenderer.invoke('chat:getVoiceData', sessionId, msgId, createTime, serverId),
     getAllVoiceMessages: (sessionId: string) => ipcRenderer.invoke('chat:getAllVoiceMessages', sessionId),
+    getAllImageMessages: (sessionId: string) => ipcRenderer.invoke('chat:getAllImageMessages', sessionId),
     getMessageDates: (sessionId: string) => ipcRenderer.invoke('chat:getMessageDates', sessionId),
     resolveVoiceCache: (sessionId: string, msgId: string) => ipcRenderer.invoke('chat:resolveVoiceCache', sessionId, msgId),
     getVoiceTranscript: (sessionId: string, msgId: string, createTime?: number) => ipcRenderer.invoke('chat:getVoiceTranscript', sessionId, msgId, createTime),

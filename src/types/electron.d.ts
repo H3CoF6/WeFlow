@@ -19,6 +19,17 @@ export interface ElectronAPI {
     set: (key: string, value: unknown) => Promise<void>
     clear: () => Promise<boolean>
   }
+  auth: {
+    hello: (message?: string) => Promise<{ success: boolean; error?: string }>
+    verifyEnabled: () => Promise<boolean>
+    unlock: (password: string) => Promise<{ success: boolean; error?: string }>
+    enableLock: (password: string) => Promise<{ success: boolean; error?: string }>
+    disableLock: (password: string) => Promise<{ success: boolean; error?: string }>
+    changePassword: (oldPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>
+    setHelloSecret: (password: string) => Promise<{ success: boolean }>
+    clearHelloSecret: () => Promise<{ success: boolean }>
+    isLockMode: () => Promise<boolean>
+  }
   dialog: {
     openFile: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>
     openDirectory: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>
@@ -115,6 +126,11 @@ export interface ElectronAPI {
     getImageData: (sessionId: string, msgId: string) => Promise<{ success: boolean; data?: string; error?: string }>
     getVoiceData: (sessionId: string, msgId: string, createTime?: number, serverId?: string | number) => Promise<{ success: boolean; data?: string; error?: string }>
     getAllVoiceMessages: (sessionId: string) => Promise<{ success: boolean; messages?: Message[]; error?: string }>
+    getAllImageMessages: (sessionId: string) => Promise<{
+      success: boolean
+      images?: { imageMd5?: string; imageDatName?: string; createTime?: number }[]
+      error?: string
+    }>
     resolveVoiceCache: (sessionId: string, msgId: string) => Promise<{ success: boolean; hasCache: boolean; data?: string }>
     getVoiceTranscript: (sessionId: string, msgId: string, createTime?: number) => Promise<{ success: boolean; transcript?: string; error?: string }>
     onVoiceTranscriptPartial: (callback: (payload: { msgId: string; text: string }) => void) => () => void

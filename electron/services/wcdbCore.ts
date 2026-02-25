@@ -1024,7 +1024,7 @@ export class WcdbCore {
     }
     try {
       // 1. 打开游标 (使用 Ascending=1 从指定时间往后查)
-      const openRes = await this.openMessageCursorLite(sessionId, limit, true, minTime, 0)
+      const openRes = await this.openMessageCursor(sessionId, limit, true, minTime, 0)
       if (!openRes.success || !openRes.cursor) {
         return { success: false, error: openRes.error }
       }

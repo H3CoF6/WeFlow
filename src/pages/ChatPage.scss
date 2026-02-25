@@ -1041,12 +1041,13 @@
 // 链接卡片消息样式
 .link-message {
   width: 280px;
-  background: var(--card-bg);
+  background: var(--card-inner-bg);
   border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid var(--border-color);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
 
   &:hover {
     background: var(--bg-hover);
@@ -1114,19 +1115,362 @@
       }
     }
   }
+
+  .appmsg-meta-badge {
+    font-size: 11px;
+    line-height: 1;
+    color: var(--primary);
+    background: rgba(127, 127, 127, 0.08);
+    border: 1px solid rgba(127, 127, 127, 0.18);
+    border-radius: 999px;
+    padding: 3px 7px;
+    align-self: flex-start;
+    white-space: nowrap;
+  }
+
+  .link-desc-block {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .appmsg-url-line {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &.appmsg-rich-card {
+    .link-header {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+}
+
+.link-thumb.theme-adaptive,
+.miniapp-thumb.theme-adaptive {
+  transition: filter 0.2s ease;
+}
+
+[data-mode="dark"] {
+
+  .link-thumb.theme-adaptive,
+  .miniapp-thumb.theme-adaptive {
+    filter: invert(1) hue-rotate(180deg);
+  }
 }
 
 // 适配发送出去的消息中的链接卡片
 .message-bubble.sent .link-message {
-  background: var(--card-bg);
-  border: 1px solid var(--border-color);
+  background: var(--sent-card-bg);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+
+  &:hover {
+    background: var(--primary-hover);
+    border-color: rgba(255, 255, 255, 0.25);
+  }
 
   .link-title {
-    color: var(--text-primary);
+    color: white;
   }
 
   .link-desc {
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .appmsg-url-line {
+    color: rgba(255, 255, 255, 0.6);
+  }
+}
+
+// ============= 专属消息卡片 =============
+
+// 红包卡片
+.hongbao-message {
+  width: 240px;
+  background: linear-gradient(135deg, #e25b4a 0%, #c94535 100%);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  cursor: default;
+
+  .hongbao-icon {
+    flex-shrink: 0;
+
+    svg {
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+    }
+  }
+
+  .hongbao-info {
+    flex: 1;
+    color: white;
+
+    .hongbao-greeting {
+      font-size: 15px;
+      font-weight: 500;
+      margin-bottom: 6px;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+
+    .hongbao-label {
+      font-size: 12px;
+      opacity: 0.8;
+    }
+  }
+}
+
+// 礼物卡片
+.gift-message {
+  width: 240px;
+  background: linear-gradient(135deg, #f7a8b8 0%, #e88fa0 100%);
+  border-radius: 12px;
+  padding: 14px 16px;
+  cursor: default;
+
+  .gift-img {
+    width: 100%;
+    border-radius: 8px;
+    margin-bottom: 10px;
+    object-fit: cover;
+  }
+
+  .gift-info {
+    color: white;
+
+    .gift-wish {
+      font-size: 15px;
+      font-weight: 500;
+      margin-bottom: 4px;
+    }
+
+    .gift-price {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .gift-label {
+      font-size: 12px;
+      opacity: 0.7;
+    }
+  }
+}
+
+// 视频号卡片
+.channel-video-card {
+  width: 200px;
+  background: var(--card-inner-bg);
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  position: relative;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: var(--primary);
+  }
+
+  .channel-video-cover {
+    position: relative;
+    width: 100%;
+    height: 160px;
+    background: #000;
+
+    img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .channel-video-cover-placeholder {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #666;
+    }
+
+    .channel-video-duration {
+      position: absolute;
+      bottom: 6px;
+      right: 6px;
+      background: rgba(0, 0, 0, 0.6);
+      color: white;
+      font-size: 11px;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+  }
+
+  .channel-video-info {
+    padding: 8px 10px;
+
+    .channel-video-title {
+      font-size: 13px;
+      color: var(--text-primary);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      margin-bottom: 4px;
+    }
+
+    .channel-video-author {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-secondary);
+
+      .channel-video-avatar {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+      }
+    }
+  }
+}
+
+// 音乐卡片
+.music-message {
+  width: 240px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  display: flex;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    opacity: 0.85;
+    border-color: var(--primary);
+  }
+
+  .music-cover {
+    width: 80px;
+    align-self: stretch;
+    flex-shrink: 0;
+    background: var(--bg-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     color: var(--text-secondary);
+
+    img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+  }
+
+  .music-info {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    padding: 10px;
+
+    .music-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .music-artist {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .music-source {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin-top: 2px;
+    }
+  }
+}
+
+// 位置消息卡片
+.location-message {
+  width: 240px;
+  background: var(--card-inner-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: var(--primary);
+  }
+
+  .location-text {
+    padding: 12px;
+    display: flex;
+    gap: 8px;
+  }
+
+  .location-icon {
+    flex-shrink: 0;
+    color: #e25b4a;
+    margin-top: 2px;
+  }
+
+  .location-info {
+    flex: 1;
+    min-width: 0;
+
+    .location-name {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 2px;
+      color: var(--text-primary);
+    }
+
+    .location-label {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      line-height: 1.4;
+    }
+  }
+
+  .location-map {
+    position: relative;
+    height: 100px;
+    overflow: hidden;
+
+    img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+  }
+}
+
+// 暗色模式下地图瓦片反色
+[data-mode="dark"] {
+  .location-map img {
+    filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9);
   }
 }
 
@@ -1510,6 +1854,20 @@
     background: transparent;
     padding: 0;
   }
+}
+
+// 卡片类消息：气泡变透明，让卡片自己做视觉容器
+.message-bubble .bubble-content:has(.link-message),
+.message-bubble .bubble-content:has(.card-message),
+.message-bubble .bubble-content:has(.chat-record-message),
+.message-bubble .bubble-content:has(.official-message),
+.message-bubble .bubble-content:has(.channel-video-card),
+.message-bubble .bubble-content:has(.location-message) {
+  background: transparent !important;
+  padding: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
 }
 
 .emoji-image {
@@ -2487,10 +2845,17 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px;
-  background: var(--bg-tertiary);
+  padding: 12px 14px;
+  background: var(--card-inner-bg);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
   min-width: 200px;
+  transition: opacity 0.2s ease;
+  cursor: pointer;
+
+  &:hover {
+    opacity: 0.85;
+  }
 
   .card-icon {
     flex-shrink: 0;
@@ -2512,6 +2877,18 @@
   .card-label {
     font-size: 12px;
     color: var(--text-tertiary);
+  }
+}
+
+// 聊天记录消息 (合并转发)
+.chat-record-message {
+  background: var(--card-inner-bg) !important;
+  border: 1px solid var(--border-color) !important;
+  transition: opacity 0.2s ease;
+  cursor: pointer;
+
+  &:hover {
+    opacity: 0.85;
   }
 }
 
@@ -2752,12 +3129,14 @@
 
   .card-message,
   .chat-record-message,
-  .miniapp-message {
-    background: rgba(255, 255, 255, 0.15);
+  .miniapp-message,
+  .appmsg-rich-card {
+    background: var(--sent-card-bg);
 
     .card-name,
     .miniapp-title,
-    .source-name {
+    .source-name,
+    .link-title {
       color: white;
     }
 
@@ -2765,7 +3144,9 @@
     .miniapp-label,
     .chat-record-item,
     .chat-record-meta-line,
-    .chat-record-desc {
+    .chat-record-desc,
+    .link-desc,
+    .appmsg-url-line {
       color: rgba(255, 255, 255, 0.8);
     }
 
@@ -2777,6 +3158,12 @@
 
     .chat-record-more {
       color: rgba(255, 255, 255, 0.9);
+    }
+
+    .appmsg-meta-badge {
+      color: rgba(255, 255, 255, 0.92);
+      background: rgba(255, 255, 255, 0.12);
+      border-color: rgba(255, 255, 255, 0.2);
     }
   }
 
@@ -3233,6 +3620,236 @@
         background: var(--primary-hover);
         box-shadow: 0 4px 12px var(--primary-light);
       }
+    }
+  }
+}
+
+.miniapp-message-rich {
+  .miniapp-thumb {
+    width: 42px;
+    height: 42px;
+    border-radius: 8px;
+    object-fit: cover;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    flex-shrink: 0;
+  }
+}
+
+// 名片消息样式
+.card-message {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--card-inner-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+
+  &:hover {
+    background: var(--bg-hover);
+  }
+
+  .card-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--bg-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+  }
+
+  .card-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .card-name {
+    font-size: 15px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-wxid {
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+
+  .card-label {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-color);
+  }
+}
+
+// 聊天记录消息外观
+.chat-record-message {
+  background: var(--card-inner-bg) !important;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+
+  &:hover {
+    background: var(--bg-hover) !important;
+  }
+
+  .chat-record-list {
+    font-size: 13px;
+    color: var(--text-tertiary);
+    line-height: 1.6;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color);
+
+    .chat-record-item {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+
+      .source-name {
+        color: var(--text-secondary);
+      }
+    }
+  }
+
+  .chat-record-more {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+  }
+}
+
+// 公众号文章图文消息外观 (大图模式)
+.official-message {
+  display: flex;
+  flex-direction: column;
+  background: var(--card-inner-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 240px;
+  max-width: 320px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+
+  &:hover {
+    background: var(--bg-hover);
+  }
+
+  .official-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+
+    .official-avatar {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      object-fit: cover;
+    }
+
+    .official-avatar-placeholder {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--bg-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-tertiary);
+
+      svg {
+        width: 14px;
+        height: 14px;
+      }
+    }
+
+    .official-name {
+      font-size: 13px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+
+  .official-body {
+    display: flex;
+    flex-direction: column;
+
+    .official-cover-wrapper {
+      position: relative;
+      width: 100%;
+      padding-top: 42.5%; // ~2.35:1 aspectRatio standard for WeChat article covers
+      background: var(--bg-secondary);
+      overflow: hidden;
+
+      .official-cover {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .official-title-overlay {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        padding: 24px 12px 10px;
+        background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.7));
+        color: #fff;
+        font-size: 15px;
+        font-weight: 500;
+        line-height: 1.4;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+    }
+
+    .official-title-text {
+      padding: 0 12px 10px;
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .official-digest {
+      font-size: 13px;
+      color: var(--text-tertiary);
+      padding: 0 12px 12px;
+      line-height: 1.5;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
     }
   }
 }

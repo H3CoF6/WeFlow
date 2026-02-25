@@ -21,6 +21,7 @@ interface SnsMedia {
 
 interface SnsMediaGridProps {
     mediaList: SnsMedia[]
+    postType?: number
     onPreview: (src: string, isVideo?: boolean, liveVideoPath?: string) => void
     onMediaDeleted?: () => void
 }
@@ -80,7 +81,7 @@ const extractVideoFrame = async (videoPath: string): Promise<string> => {
     })
 }
 
-const MediaItem = ({ media, onPreview, onMediaDeleted }: { media: SnsMedia; onPreview: (src: string, isVideo?: boolean, liveVideoPath?: string) => void; onMediaDeleted?: () => void }) => {
+const MediaItem = ({ media, postType, onPreview, onMediaDeleted }: { media: SnsMedia; postType?: number; onPreview: (src: string, isVideo?: boolean, liveVideoPath?: string) => void; onMediaDeleted?: () => void }) => {
     const [error, setError] = useState(false)
     const [deleted, setDeleted] = useState(false)
     const [loading, setLoading] = useState(true)
@@ -96,6 +97,8 @@ const MediaItem = ({ media, onPreview, onMediaDeleted }: { media: SnsMedia; onPr
     const isVideo = isSnsVideoUrl(media.url)
     const isLive = !!media.livePhoto
     const targetUrl = media.thumb || media.url
+    // type 7 的朋友圈媒体不需要解密，直接使用原始 URL
+    const skipDecrypt = postType === 7
 
     // 视频重试：失败时重试最多2次，耗尽才标记删除
     const videoRetryOrDelete = () => {
@@ -119,7 +122,7 @@ const MediaItem = ({ media, onPreview, onMediaDeleted }: { media: SnsMedia; onPr
                     // For images, we proxy to get the local path/base64
                     const result = await window.electronAPI.sns.proxyImage({
                         url: targetUrl,
-                        key: media.key
+                        key: skipDecrypt ? undefined : media.key
                     })
                     if (cancelled) return
 
@@ -134,7 +137,7 @@ const MediaItem = ({ media, onPreview, onMediaDeleted }: { media: SnsMedia; onPr
                     if (isLive && media.livePhoto?.url) {
                         window.electronAPI.sns.proxyImage({
                             url: media.livePhoto.url,
-                            key: media.livePhoto.key || media.key
+                            key: skipDecrypt ? undefined : (media.livePhoto.key || media.key)
                         }).then((res: any) => {
                             if (!cancelled && res.success && res.videoPath) {
                                 setLiveVideoPath(`file://${res.videoPath.replace(/\\/g, '/')}`)
@@ -150,7 +153,7 @@ const MediaItem = ({ media, onPreview, onMediaDeleted }: { media: SnsMedia; onPr
                     // Usually we need to call proxyImage with the video URL to decrypt it to cache
                     const result = await window.electronAPI.sns.proxyImage({
                         url: media.url,
-                        key: media.key
+                        key: skipDecrypt ? undefined : media.key
                     })
 
                     if (cancelled) return
@@ -201,7 +204,7 @@ const MediaItem = ({ media, onPreview, onMediaDeleted }: { media: SnsMedia; onPr
                 try {
                     const res = await window.electronAPI.sns.proxyImage({
                         url: media.url,
-                        key: media.key
+                        key: skipDecrypt ? undefined : media.key
                     })
                     if (res.success && res.videoPath) {
                         const local = `file://${res.videoPath.replace(/\\/g, '/')}`
@@ -229,7 +232,7 @@ const MediaItem = ({ media, onPreview, onMediaDeleted }: { media: SnsMedia; onPr
         try {
             const result = await window.electronAPI.sns.proxyImage({
                 url: media.url,
-                key: media.key
+                key: skipDecrypt ? undefined : media.key
             })
 
             if (result.success) {
@@ -334,7 +337,7 @@ const MediaItem = ({ media, onPreview, onMediaDeleted }: { media: SnsMedia; onPr
     )
 }
 
-export const SnsMediaGrid: React.FC<SnsMediaGridProps> = ({ mediaList, onPreview, onMediaDeleted }) => {
+export const SnsMediaGrid: React.FC<SnsMediaGridProps> = ({ mediaList, postType, onPreview, onMediaDeleted }) => {
     if (!mediaList || mediaList.length === 0) return null
 
     const count = mediaList.length
@@ -350,7 +353,7 @@ export const SnsMediaGrid: React.FC<SnsMediaGridProps> = ({ mediaList, onPreview
     return (
         <div className={`sns-media-grid ${gridClass}`}>
             {mediaList.map((media, idx) => (
-                <MediaItem key={idx} media={media} onPreview={onPreview} onMediaDeleted={onMediaDeleted} />
+                <MediaItem key={idx} media={media} postType={postType} onPreview={onPreview} onMediaDeleted={onMediaDeleted} />
             ))}
         </div>
     )
