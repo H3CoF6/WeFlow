@@ -914,6 +914,9 @@ function registerIpcHandlers() {
   ipcMain.handle('chat:getAllVoiceMessages', async (_, sessionId: string) => {
     return chatService.getAllVoiceMessages(sessionId)
   })
+  ipcMain.handle('chat:getAllImageMessages', async (_, sessionId: string) => {
+    return chatService.getAllImageMessages(sessionId)
+  })
   ipcMain.handle('chat:getMessageDates', async (_, sessionId: string) => {
     return chatService.getMessageDates(sessionId)
   })

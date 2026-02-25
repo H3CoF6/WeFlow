@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { useChatStore } from '../stores/chatStore'
 import { useBatchTranscribeStore } from '../stores/batchTranscribeStore'
+import { useBatchImageDecryptStore } from '../stores/batchImageDecryptStore'
 import type { ChatSession, Message } from '../types/models'
 import { getEmojiPath } from 'wechat-emojis'
 import { VoiceTranscribeDialog } from '../components/VoiceTranscribeDialog'
@@ -25,6 +26,12 @@ interface XmlField {
   type: 'attr' | 'node';
   tagName?: string;
   path: string;
+}
+
+interface BatchImageDecryptCandidate {
+  imageMd5?: string
+  imageDatName?: string
+  createTime?: number
 }
 
 // 尝试解析 XML 为可编辑字段
@@ -301,11 +308,16 @@ function ChatPage(_props: ChatPageProps) {
 
   // 批量语音转文字相关状态（进度/结果 由全局 store 管理）
   const { isBatchTranscribing, progress: batchTranscribeProgress, showToast: showBatchProgress, startTranscribe, updateProgress, finishTranscribe, setShowToast: setShowBatchProgress } = useBatchTranscribeStore()
+  const { isBatchDecrypting, progress: batchDecryptProgress, startDecrypt, updateProgress: updateDecryptProgress, finishDecrypt, setShowToast: setShowBatchDecryptToast } = useBatchImageDecryptStore()
   const [showBatchConfirm, setShowBatchConfirm] = useState(false)
   const [batchVoiceCount, setBatchVoiceCount] = useState(0)
   const [batchVoiceMessages, setBatchVoiceMessages] = useState<Message[] | null>(null)
   const [batchVoiceDates, setBatchVoiceDates] = useState<string[]>([])
   const [batchSelectedDates, setBatchSelectedDates] = useState<Set<string>>(new Set())
+  const [showBatchDecryptConfirm, setShowBatchDecryptConfirm] = useState(false)
+  const [batchImageMessages, setBatchImageMessages] = useState<BatchImageDecryptCandidate[] | null>(null)
+  const [batchImageDates, setBatchImageDates] = useState<string[]>([])
+  const [batchImageSelectedDates, setBatchImageSelectedDates] = useState<Set<string>>(new Set())
 
   // 批量删除相关状态
   const [isDeleting, setIsDeleting] = useState(false)
@@ -1434,6 +1446,37 @@ function ChatPage(_props: ChatPageProps) {
     setShowBatchConfirm(true)
   }, [sessions, currentSessionId, isBatchTranscribing])
 
+  const handleBatchDecrypt = useCallback(async () => {
+    if (!currentSessionId || isBatchDecrypting) return
+    const session = sessions.find(s => s.username === currentSessionId)
+    if (!session) {
+      alert('未找到当前会话')
+      return
+    }
+
+    const result = await window.electronAPI.chat.getAllImageMessages(currentSessionId)
+    if (!result.success || !result.images) {
+      alert(`获取图片消息失败: ${result.error || '未知错误'}`)
+      return
+    }
+
+    if (result.images.length === 0) {
+      alert('当前会话没有图片消息')
+      return
+    }
+
+    const dateSet = new Set<string>()
+    result.images.forEach((img: BatchImageDecryptCandidate) => {
+      if (img.createTime) dateSet.add(new Date(img.createTime * 1000).toISOString().slice(0, 10))
+    })
+    const sortedDates = Array.from(dateSet).sort((a, b) => b.localeCompare(a))
+
+    setBatchImageMessages(result.images)
+    setBatchImageDates(sortedDates)
+    setBatchImageSelectedDates(new Set(sortedDates))
+    setShowBatchDecryptConfirm(true)
+  }, [currentSessionId, isBatchDecrypting, sessions])
+
   const handleExportCurrentSession = useCallback(() => {
     if (!currentSessionId) return
     navigate('/export', {
@@ -1556,6 +1599,88 @@ function ChatPage(_props: ChatPageProps) {
   }, [])
   const selectAllBatchDates = useCallback(() => setBatchSelectedDates(new Set(batchVoiceDates)), [batchVoiceDates])
   const clearAllBatchDates = useCallback(() => setBatchSelectedDates(new Set()), [])
+
+  const confirmBatchDecrypt = useCallback(async () => {
+    if (!currentSessionId) return
+
+    const selected = batchImageSelectedDates
+    if (selected.size === 0) {
+      alert('请至少选择一个日期')
+      return
+    }
+
+    const images = (batchImageMessages || []).filter(img =>
+      img.createTime && selected.has(new Date(img.createTime * 1000).toISOString().slice(0, 10))
+    )
+    if (images.length === 0) {
+      alert('所选日期下没有图片消息')
+      return
+    }
+
+    const session = sessions.find(s => s.username === currentSessionId)
+    if (!session) return
+
+    setShowBatchDecryptConfirm(false)
+    setBatchImageMessages(null)
+    setBatchImageDates([])
+    setBatchImageSelectedDates(new Set())
+
+    startDecrypt(images.length, session.displayName || session.username)
+
+    let successCount = 0
+    let failCount = 0
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i]
+      try {
+        const r = await window.electronAPI.image.decrypt({
+          sessionId: session.username,
+          imageMd5: img.imageMd5,
+          imageDatName: img.imageDatName,
+          force: false
+        })
+        if (r?.success) successCount++
+        else failCount++
+      } catch {
+        failCount++
+      }
+
+      updateDecryptProgress(i + 1, images.length)
+      if (i % 5 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+    }
+
+    finishDecrypt(successCount, failCount)
+  }, [batchImageMessages, batchImageSelectedDates, currentSessionId, finishDecrypt, sessions, startDecrypt, updateDecryptProgress])
+
+  const batchImageCountByDate = useMemo(() => {
+    const map = new Map<string, number>()
+    if (!batchImageMessages) return map
+    batchImageMessages.forEach(img => {
+      if (!img.createTime) return
+      const d = new Date(img.createTime * 1000).toISOString().slice(0, 10)
+      map.set(d, (map.get(d) ?? 0) + 1)
+    })
+    return map
+  }, [batchImageMessages])
+
+  const batchImageSelectedCount = useMemo(() => {
+    if (!batchImageMessages) return 0
+    return batchImageMessages.filter(img =>
+      img.createTime && batchImageSelectedDates.has(new Date(img.createTime * 1000).toISOString().slice(0, 10))
+    ).length
+  }, [batchImageMessages, batchImageSelectedDates])
+
+  const toggleBatchImageDate = useCallback((date: string) => {
+    setBatchImageSelectedDates(prev => {
+      const next = new Set(prev)
+      if (next.has(date)) next.delete(date)
+      else next.add(date)
+      return next
+    })
+  }, [])
+  const selectAllBatchImageDates = useCallback(() => setBatchImageSelectedDates(new Set(batchImageDates)), [batchImageDates])
+  const clearAllBatchImageDates = useCallback(() => setBatchImageSelectedDates(new Set()), [])
 
   const lastSelectedIdRef = useRef<number | null>(null)
 
@@ -1997,6 +2122,26 @@ function ChatPage(_props: ChatPageProps) {
                   )}
                 </button>
                 <button
+                  className={`icon-btn batch-decrypt-btn${isBatchDecrypting ? ' transcribing' : ''}`}
+                  onClick={() => {
+                    if (isBatchDecrypting) {
+                      setShowBatchDecryptToast(true)
+                    } else {
+                      handleBatchDecrypt()
+                    }
+                  }}
+                  disabled={!currentSessionId}
+                  title={isBatchDecrypting
+                    ? `批量解密中 (${batchDecryptProgress.current}/${batchDecryptProgress.total})，点击查看进度`
+                    : '批量解密图片'}
+                >
+                  {isBatchDecrypting ? (
+                    <Loader2 size={18} className="spin" />
+                  ) : (
+                    <ImageIcon size={18} />
+                  )}
+                </button>
+                <button
                   className="icon-btn jump-to-time-btn"
                   onClick={async () => {
                     setShowJumpDialog(true)
@@ -2361,6 +2506,66 @@ function ChatPage(_props: ChatPageProps) {
         document.body
       )}
       {/* 消息右键菜单 */}
+      {showBatchDecryptConfirm && createPortal(
+        <div className="batch-modal-overlay" onClick={() => setShowBatchDecryptConfirm(false)}>
+          <div className="batch-modal-content batch-confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="batch-modal-header">
+              <ImageIcon size={20} />
+              <h3>批量解密图片</h3>
+            </div>
+            <div className="batch-modal-body">
+              <p>选择要解密的日期（仅显示有图片的日期），然后开始解密。</p>
+              {batchImageDates.length > 0 && (
+                <div className="batch-dates-list-wrap">
+                  <div className="batch-dates-actions">
+                    <button type="button" className="batch-dates-btn" onClick={selectAllBatchImageDates}>全选</button>
+                    <button type="button" className="batch-dates-btn" onClick={clearAllBatchImageDates}>取消全选</button>
+                  </div>
+                  <ul className="batch-dates-list">
+                    {batchImageDates.map(dateStr => {
+                      const count = batchImageCountByDate.get(dateStr) ?? 0
+                      const checked = batchImageSelectedDates.has(dateStr)
+                      return (
+                        <li key={dateStr}>
+                          <label className="batch-date-row">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleBatchImageDate(dateStr)}
+                            />
+                            <span className="batch-date-label">{formatBatchDateLabel(dateStr)}</span>
+                            <span className="batch-date-count">{count} 张图片</span>
+                          </label>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+              <div className="batch-info">
+                <div className="info-item">
+                  <span className="label">已选:</span>
+                  <span className="value">{batchImageSelectedDates.size} 天，共 {batchImageSelectedCount} 张图片</span>
+                </div>
+              </div>
+              <div className="batch-warning">
+                <AlertCircle size={16} />
+                <span>批量解密可能需要较长时间，进行中会在右下角显示非阻塞进度浮层。</span>
+              </div>
+            </div>
+            <div className="batch-modal-footer">
+              <button className="btn-secondary" onClick={() => setShowBatchDecryptConfirm(false)}>
+                取消
+              </button>
+              <button className="btn-primary" onClick={confirmBatchDecrypt}>
+                <ImageIcon size={16} />
+                开始解密
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
       {contextMenu && createPortal(
         <>
           <div className="context-menu-overlay" onClick={() => setContextMenu(null)}
@@ -2856,7 +3061,7 @@ function MessageBubble({
           setImageLocalPath(result.localPath)
           setImageHasUpdate(false)
           if (result.liveVideoPath) setImageLiveVideoPath(result.liveVideoPath)
-          return
+          return result
         }
       }
 
@@ -2867,7 +3072,7 @@ function MessageBubble({
         imageDataUrlCache.set(imageCacheKey, dataUrl)
         setImageLocalPath(dataUrl)
         setImageHasUpdate(false)
-        return
+        return { success: true, localPath: dataUrl } as any
       }
       if (!silent) setImageError(true)
     } catch {
@@ -2875,6 +3080,7 @@ function MessageBubble({
     } finally {
       if (!silent) setImageLoading(false)
     }
+    return { success: false } as any
   }, [isImage, imageLoading, message.imageMd5, message.imageDatName, message.localId, session.username, imageCacheKey, detectImageMimeFromBase64])
 
   const triggerForceHd = useCallback(() => {
@@ -2904,6 +3110,55 @@ function MessageBubble({
     })
     void requestImageDecrypt()
   }, [message.imageDatName, message.imageMd5, message.localId, requestImageDecrypt, session.username])
+
+  const handleOpenImageViewer = useCallback(async () => {
+    if (!imageLocalPath) return
+
+    let finalImagePath = imageLocalPath
+    let finalLiveVideoPath = imageLiveVideoPath || undefined
+
+    // If current cache is a thumbnail, wait for a silent force-HD decrypt before opening viewer.
+    if (imageHasUpdate) {
+      try {
+        const upgraded = await requestImageDecrypt(true, true)
+        if (upgraded?.success && upgraded.localPath) {
+          finalImagePath = upgraded.localPath
+          finalLiveVideoPath = upgraded.liveVideoPath || finalLiveVideoPath
+        }
+      } catch { }
+    }
+
+    // One more resolve helps when background/batch decrypt has produced a clearer image or live video
+    // but local component state hasn't caught up yet.
+    if (message.imageMd5 || message.imageDatName) {
+      try {
+        const resolved = await window.electronAPI.image.resolveCache({
+          sessionId: session.username,
+          imageMd5: message.imageMd5 || undefined,
+          imageDatName: message.imageDatName
+        })
+        if (resolved?.success && resolved.localPath) {
+          finalImagePath = resolved.localPath
+          finalLiveVideoPath = resolved.liveVideoPath || finalLiveVideoPath
+          imageDataUrlCache.set(imageCacheKey, resolved.localPath)
+          setImageLocalPath(resolved.localPath)
+          if (resolved.liveVideoPath) setImageLiveVideoPath(resolved.liveVideoPath)
+          setImageHasUpdate(Boolean(resolved.hasUpdate))
+        }
+      } catch { }
+    }
+
+    void window.electronAPI.window.openImageViewerWindow(finalImagePath, finalLiveVideoPath)
+  }, [
+    imageHasUpdate,
+    imageLiveVideoPath,
+    imageLocalPath,
+    imageCacheKey,
+    message.imageDatName,
+    message.imageMd5,
+    requestImageDecrypt,
+    session.username
+  ])
 
   useEffect(() => {
     return () => {
@@ -3426,10 +3681,7 @@ function MessageBubble({
                   src={imageLocalPath}
                   alt="图片"
                   className="image-message"
-                  onClick={() => {
-                    if (imageHasUpdate) void requestImageDecrypt(true, true)
-                    void window.electronAPI.window.openImageViewerWindow(imageLocalPath!, imageLiveVideoPath || undefined)
-                  }}
+                  onClick={() => { void handleOpenImageViewer() }}
                   onLoad={() => setImageError(false)}
                   onError={() => setImageError(true)}
                 />
@@ -3692,16 +3944,24 @@ function MessageBubble({
     // 名片消息
     if (isCard) {
       const cardName = message.cardNickname || message.cardUsername || '未知联系人'
+      const cardAvatar = message.cardAvatarUrl
       return (
         <div className="card-message">
           <div className="card-icon">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
+            {cardAvatar ? (
+              <img src={cardAvatar} alt="" style={{ width: '40px', height: '40px', objectFit: 'cover', borderRadius: '8px' }} referrerPolicy="no-referrer" />
+            ) : (
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            )}
           </div>
           <div className="card-info">
             <div className="card-name">{cardName}</div>
+            {message.cardUsername && message.cardUsername !== message.cardNickname && (
+              <div className="card-wxid">微信号: {message.cardUsername}</div>
+            )}
             <div className="card-label">个人名片</div>
           </div>
         </div>
@@ -3720,7 +3980,329 @@ function MessageBubble({
       )
     }
 
+    // 位置消息
+    if (message.localType === 48) {
+      const raw = message.rawContent || ''
+      const poiname = raw.match(/poiname="([^"]*)"/)?.[1] || message.locationPoiname || '位置'
+      const label = raw.match(/label="([^"]*)"/)?.[1] || message.locationLabel || ''
+      const lat = parseFloat(raw.match(/x="([^"]*)"/)?.[1] || String(message.locationLat || 0))
+      const lng = parseFloat(raw.match(/y="([^"]*)"/)?.[1] || String(message.locationLng || 0))
+      const zoom = 15
+      const tileX = Math.floor((lng + 180) / 360 * Math.pow(2, zoom))
+      const latRad = lat * Math.PI / 180
+      const tileY = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * Math.pow(2, zoom))
+      const mapTileUrl = (lat && lng)
+        ? `https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x=${tileX}&y=${tileY}&z=${zoom}`
+        : ''
+      return (
+        <div className="location-message" onClick={() => window.electronAPI.shell.openExternal(`https://uri.amap.com/marker?position=${lng},${lat}&name=${encodeURIComponent(poiname || label)}`)}>
+          <div className="location-text">
+            <div className="location-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                <circle cx="12" cy="10" r="3" />
+              </svg>
+            </div>
+            <div className="location-info">
+              {poiname && <div className="location-name">{poiname}</div>}
+              {label && <div className="location-label">{label}</div>}
+            </div>
+          </div>
+          {mapTileUrl && (
+            <div className="location-map">
+              <img src={mapTileUrl} alt="地图" referrerPolicy="no-referrer" />
+            </div>
+          )}
+        </div>
+      )
+    }
+
     // 链接消息 (AppMessage)
+    const appMsgRichPreview = (() => {
+      const rawXml = message.rawContent || ''
+      if (!rawXml || (!rawXml.includes('<appmsg') && !rawXml.includes('&lt;appmsg'))) return null
+
+      let doc: Document | null = null
+      const getDoc = () => {
+        if (doc) return doc
+        try {
+          const start = rawXml.indexOf('<msg>')
+          const xml = start >= 0 ? rawXml.slice(start) : rawXml
+          doc = new DOMParser().parseFromString(xml, 'text/xml')
+        } catch {
+          doc = null
+        }
+        return doc
+      }
+      const q = (selector: string) => getDoc()?.querySelector(selector)?.textContent?.trim() || ''
+
+      const xmlType = message.xmlType || q('appmsg > type') || q('type')
+      const title = message.linkTitle || q('title') || cleanMessageContent(message.parsedContent) || 'Card'
+      const desc = message.appMsgDesc || q('des')
+      const url = message.linkUrl || q('url')
+      const thumbUrl = message.linkThumb || message.appMsgThumbUrl || q('thumburl') || q('cdnthumburl') || q('cover') || q('coverurl')
+      const musicUrl = message.appMsgMusicUrl || message.appMsgDataUrl || q('musicurl') || q('playurl') || q('dataurl') || q('lowurl')
+      const sourceName = message.appMsgSourceName || q('sourcename')
+      const sourceDisplayName = q('sourcedisplayname') || ''
+      const appName = message.appMsgAppName || q('appname')
+      const sourceUsername = message.appMsgSourceUsername || q('sourceusername')
+      const finderName =
+        message.finderNickname ||
+        message.finderUsername ||
+        q('findernickname') ||
+        q('finder_nickname') ||
+        q('finderusername') ||
+        q('finder_username')
+
+      const lower = rawXml.toLowerCase()
+
+      const kind = message.appMsgKind || (
+        (xmlType === '2001' || lower.includes('hongbao')) ? 'red-packet'
+          : (xmlType === '115' ? 'gift'
+            : ((xmlType === '33' || xmlType === '36') ? 'miniapp'
+              : (((xmlType === '5' || xmlType === '49') && (sourceUsername.startsWith('gh_') || !!sourceName || appName.includes('公众号'))) ? 'official-link'
+                : (xmlType === '51' ? 'finder'
+                  : (xmlType === '3' ? 'music'
+                    : ((xmlType === '5' || xmlType === '49') ? 'link' // Fallback for standard links
+                      : (!!musicUrl ? 'music' : '')))))))
+      )
+
+      if (!kind) return null
+
+      // 对视频号提取真实标题，避免出现 "当前版本不支持该内容"
+      let displayTitle = title
+      if (kind === 'finder' && (!displayTitle || displayTitle.includes('不支持'))) {
+        try {
+          const d = new DOMParser().parseFromString(rawXml, 'text/xml')
+          displayTitle = d.querySelector('finderFeed desc')?.textContent?.trim() || desc || ''
+        } catch {
+          displayTitle = desc || ''
+        }
+      }
+
+      const openExternal = (e: React.MouseEvent, nextUrl?: string) => {
+        if (!nextUrl) return
+        e.stopPropagation()
+        if (window.electronAPI?.shell?.openExternal) {
+          window.electronAPI.shell.openExternal(nextUrl)
+        } else {
+          window.open(nextUrl, '_blank')
+        }
+      }
+
+      const metaLabel =
+        kind === 'red-packet' ? '红包'
+          : kind === 'finder' ? (finderName || '视频号')
+            : kind === 'location' ? '位置'
+              : kind === 'music' ? (sourceName || appName || '音乐')
+                : (sourceName || appName || (sourceUsername.startsWith('gh_') ? '公众号' : ''))
+
+      const renderCard = (cardKind: string, clickableUrl?: string) => (
+        <div
+          className={`link-message appmsg-rich-card ${cardKind}`}
+          onClick={clickableUrl ? (e) => openExternal(e, clickableUrl) : undefined}
+          title={clickableUrl}
+        >
+          <div className="link-header">
+            <div className="link-title" title={title}>{title}</div>
+            {metaLabel ? <div className="appmsg-meta-badge">{metaLabel}</div> : null}
+          </div>
+          <div className="link-body">
+            <div className="link-desc-block">
+              {desc ? <div className="link-desc" title={desc}>{desc}</div> : null}
+            </div>
+            {thumbUrl ? (
+              <img
+                src={thumbUrl}
+                alt=""
+                className={`link-thumb${((cardKind === 'miniapp') || /\.svg(?:$|\?)/i.test(thumbUrl)) ? ' theme-adaptive' : ''}`}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <div className={`link-thumb-placeholder ${cardKind}`}>{cardKind.slice(0, 2).toUpperCase()}</div>
+            )}
+          </div>
+        </div>
+      )
+
+      if (kind === 'red-packet') {
+        // 专属红包卡片
+        const greeting = (() => {
+          try {
+            const d = getDoc()
+            if (!d) return ''
+            return d.querySelector('receivertitle')?.textContent?.trim() ||
+              d.querySelector('sendertitle')?.textContent?.trim() || ''
+          } catch { return '' }
+        })()
+        return (
+          <div className="hongbao-message">
+            <div className="hongbao-icon">
+              <svg width="32" height="32" viewBox="0 0 40 40" fill="none">
+                <rect x="4" y="6" width="32" height="28" rx="4" fill="white" fillOpacity="0.3" />
+                <rect x="4" y="6" width="32" height="14" rx="4" fill="white" fillOpacity="0.2" />
+                <circle cx="20" cy="20" r="6" fill="white" fillOpacity="0.4" />
+                <text x="20" y="24" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">¥</text>
+              </svg>
+            </div>
+            <div className="hongbao-info">
+              <div className="hongbao-greeting">{greeting || '恭喜发财，大吉大利'}</div>
+              <div className="hongbao-label">微信红包</div>
+            </div>
+          </div>
+        )
+      }
+
+      if (kind === 'gift') {
+        // 礼物卡片
+        const giftImg = message.giftImageUrl || thumbUrl
+        const giftWish = message.giftWish || title || '送你一份心意'
+        const giftPriceRaw = message.giftPrice
+        const giftPriceYuan = giftPriceRaw ? (parseInt(giftPriceRaw) / 100).toFixed(2) : ''
+        return (
+          <div className="gift-message">
+            {giftImg && <img className="gift-img" src={giftImg} alt="" referrerPolicy="no-referrer" />}
+            <div className="gift-info">
+              <div className="gift-wish">{giftWish}</div>
+              {giftPriceYuan && <div className="gift-price">¥{giftPriceYuan}</div>}
+              <div className="gift-label">微信礼物</div>
+            </div>
+          </div>
+        )
+      }
+
+      if (kind === 'finder') {
+        // 视频号专属卡片
+        const coverUrl = message.finderCoverUrl || thumbUrl
+        const duration = message.finderDuration
+        const authorName = finderName || ''
+        const authorAvatar = message.finderAvatar
+        const fmtDuration = duration ? `${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, '0')}` : ''
+        return (
+          <div className="channel-video-card" onClick={url ? (e) => openExternal(e, url) : undefined}>
+            <div className="channel-video-cover">
+              {coverUrl ? (
+                <img src={coverUrl} alt="" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="channel-video-cover-placeholder">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
+                </div>
+              )}
+              {fmtDuration && <span className="channel-video-duration">{fmtDuration}</span>}
+            </div>
+            <div className="channel-video-info">
+              <div className="channel-video-title">{displayTitle || '视频号视频'}</div>
+              <div className="channel-video-author">
+                {authorAvatar && <img className="channel-video-avatar" src={authorAvatar} alt="" referrerPolicy="no-referrer" />}
+                <span>{authorName || '视频号'}</span>
+              </div>
+            </div>
+          </div>
+        )
+      }
+
+
+
+      if (kind === 'music') {
+        // 音乐专属卡片
+        const albumUrl = message.musicAlbumUrl || thumbUrl
+        const playUrl = message.musicUrl || musicUrl || url
+        const songTitle = title || '未知歌曲'
+        const artist = desc || ''
+        const appLabel = sourceName || appName || ''
+        return (
+          <div className="music-message" onClick={playUrl ? (e) => openExternal(e, playUrl) : undefined}>
+            <div className="music-cover">
+              {albumUrl ? (
+                <img src={albumUrl} alt="" referrerPolicy="no-referrer" />
+              ) : (
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+              )}
+            </div>
+            <div className="music-info">
+              <div className="music-title">{songTitle}</div>
+              {artist && <div className="music-artist">{artist}</div>}
+              {appLabel && <div className="music-source">{appLabel}</div>}
+            </div>
+          </div>
+        )
+      }
+
+      if (kind === 'official-link') {
+        const authorAvatar = q('publisher > headimg') || q('brand_info > headimgurl') || q('appmsg > avatar') || q('headimgurl') || message.cardAvatarUrl
+        const authorName = sourceDisplayName || q('publisher > nickname') || sourceName || appName || '公众号'
+        const coverPic = q('mmreader > category > item > cover') || thumbUrl
+        const digest = q('mmreader > category > item > digest') || desc
+        const articleTitle = q('mmreader > category > item > title') || title
+
+        return (
+          <div className="official-message" onClick={url ? (e) => openExternal(e, url) : undefined}>
+            <div className="official-header">
+              {authorAvatar ? (
+                <img src={authorAvatar} alt="" className="official-avatar" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="official-avatar-placeholder">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                  </svg>
+                </div>
+              )}
+              <span className="official-name">{authorName}</span>
+            </div>
+            <div className="official-body">
+              {coverPic ? (
+                <div className="official-cover-wrapper">
+                  <img src={coverPic} alt="" className="official-cover" referrerPolicy="no-referrer" />
+                  <div className="official-title-overlay">{articleTitle}</div>
+                </div>
+              ) : (
+                <div className="official-title-text">{articleTitle}</div>
+              )}
+              {digest && <div className="official-digest">{digest}</div>}
+            </div>
+          </div>
+        )
+      }
+
+      if (kind === 'link') return renderCard('link', url || undefined)
+      if (kind === 'card') return renderCard('card', url || undefined)
+      if (kind === 'miniapp') {
+        return (
+          <div className="miniapp-message miniapp-message-rich">
+            <div className="miniapp-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+              </svg>
+            </div>
+            <div className="miniapp-info">
+              <div className="miniapp-title">{title}</div>
+              <div className="miniapp-label">{metaLabel || '小程序'}</div>
+            </div>
+            {thumbUrl ? (
+              <img
+                src={thumbUrl}
+                alt=""
+                className={`miniapp-thumb${/\.svg(?:$|\?)/i.test(thumbUrl) ? ' theme-adaptive' : ''}`}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            ) : null}
+          </div>
+        )
+      }
+      return null
+    })()
+
+    if (appMsgRichPreview) {
+      return appMsgRichPreview
+    }
+
     const isAppMsg = message.rawContent?.includes('<appmsg') || (message.parsedContent && message.parsedContent.includes('<appmsg'))
 
     if (isAppMsg) {

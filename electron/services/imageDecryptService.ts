@@ -155,6 +155,17 @@ export class ImageDecryptService {
       return { success: false, error: '缺少图片标识' }
     }
 
+    if (payload.force) {
+      const hdCached = this.findCachedOutput(cacheKey, true, payload.sessionId)
+      if (hdCached && existsSync(hdCached) && this.isImageFile(hdCached) && !this.isThumbnailPath(hdCached)) {
+        const dataUrl = this.fileToDataUrl(hdCached)
+        const localPath = dataUrl || this.filePathToUrl(hdCached)
+        const liveVideoPath = this.checkLiveVideoCache(hdCached)
+        this.emitCacheResolved(payload, cacheKey, localPath)
+        return { success: true, localPath, isThumb: false, liveVideoPath }
+      }
+    }
+
     if (!payload.force) {
       const cached = this.resolvedCache.get(cacheKey)
       if (cached && existsSync(cached) && this.isImageFile(cached)) {
@@ -346,23 +357,37 @@ export class ImageDecryptService {
    * 获取解密后的缓存目录（用于查找 hardlink.db）
    */
   private getDecryptedCacheDir(wxid: string): string | null {
-    const cachePath = this.configService.get('cachePath')
-    if (!cachePath) return null
-
     const cleanedWxid = this.cleanAccountDirName(wxid)
-    const cacheAccountDir = join(cachePath, cleanedWxid)
+    const configured = this.configService.get('cachePath')
+    const documentsPath = app.getPath('documents')
+    const baseCandidates = Array.from(new Set([
+      configured || '',
+      join(documentsPath, 'WeFlow'),
+      join(documentsPath, 'WeFlowData'),
+      this.configService.getCacheBasePath()
+    ].filter(Boolean)))
 
-    // 检查缓存目录下是否有 hardlink.db
-    if (existsSync(join(cacheAccountDir, 'hardlink.db'))) {
-      return cacheAccountDir
+    for (const base of baseCandidates) {
+      const accountCandidates = Array.from(new Set([
+        join(base, wxid),
+        join(base, cleanedWxid),
+        join(base, 'databases', wxid),
+        join(base, 'databases', cleanedWxid)
+      ]))
+      for (const accountDir of accountCandidates) {
+        if (existsSync(join(accountDir, 'hardlink.db'))) {
+          return accountDir
+        }
+        const hardlinkSubdir = join(accountDir, 'db_storage', 'hardlink')
+        if (existsSync(join(hardlinkSubdir, 'hardlink.db'))) {
+          return hardlinkSubdir
+        }
+      }
+      if (existsSync(join(base, 'hardlink.db'))) {
+        return base
+      }
     }
-    if (existsSync(join(cachePath, 'hardlink.db'))) {
-      return cachePath
-    }
-    const cacheHardlinkDir = join(cacheAccountDir, 'db_storage', 'hardlink')
-    if (existsSync(join(cacheHardlinkDir, 'hardlink.db'))) {
-      return cacheHardlinkDir
-    }
+
     return null
   }
 
@@ -371,7 +396,8 @@ export class ImageDecryptService {
       existsSync(join(dirPath, 'hardlink.db')) ||
       existsSync(join(dirPath, 'db_storage')) ||
       existsSync(join(dirPath, 'FileStorage', 'Image')) ||
-      existsSync(join(dirPath, 'FileStorage', 'Image2'))
+      existsSync(join(dirPath, 'FileStorage', 'Image2')) ||
+      existsSync(join(dirPath, 'msg', 'attach'))
     )
   }
 
@@ -437,6 +463,12 @@ export class ImageDecryptService {
           if (imageDatName) this.cacheDatPath(accountDir, imageDatName, hdPath)
           return hdPath
         }
+        const hdInDir = await this.searchDatFileInDir(dirname(hardlinkPath), imageDatName || imageMd5 || '', false)
+        if (hdInDir) {
+          this.cacheDatPath(accountDir, imageMd5, hdInDir)
+          if (imageDatName) this.cacheDatPath(accountDir, imageDatName, hdInDir)
+          return hdInDir
+        }
         // 没找到高清图，返回 null（不进行全局搜索）
         return null
       }
@@ -454,8 +486,15 @@ export class ImageDecryptService {
           // 找到缩略图但要求高清图，尝试同目录查找高清图变体
           const hdPath = this.findHdVariantInSameDir(fallbackPath)
           if (hdPath) {
+            this.cacheDatPath(accountDir, imageMd5, hdPath)
             this.cacheDatPath(accountDir, imageDatName, hdPath)
             return hdPath
+          }
+          const hdInDir = await this.searchDatFileInDir(dirname(fallbackPath), imageDatName || imageMd5 || '', false)
+          if (hdInDir) {
+            this.cacheDatPath(accountDir, imageMd5, hdInDir)
+            this.cacheDatPath(accountDir, imageDatName, hdInDir)
+            return hdInDir
           }
           return null
         }
@@ -479,15 +518,17 @@ export class ImageDecryptService {
           this.cacheDatPath(accountDir, imageDatName, hdPath)
           return hdPath
         }
+        const hdInDir = await this.searchDatFileInDir(dirname(hardlinkPath), imageDatName || '', false)
+        if (hdInDir) {
+          this.cacheDatPath(accountDir, imageDatName, hdInDir)
+          return hdInDir
+        }
         return null
       }
       this.logInfo('[ImageDecrypt] hardlink miss (datName)', { imageDatName })
     }
 
-    // 如果要求高清图但 hardlink 没找到，也不要搜索了（搜索太慢）
-    if (!allowThumbnail) {
-      return null
-    }
+    // force 模式下也继续尝试缓存目录/文件系统搜索，避免 hardlink.db 缺行时只能拿到缩略图
 
     if (!imageDatName) return null
     if (!skipResolvedCache) {
@@ -497,6 +538,8 @@ export class ImageDecryptService {
         // 缓存的是缩略图，尝试找高清图
         const hdPath = this.findHdVariantInSameDir(cached)
         if (hdPath) return hdPath
+        const hdInDir = await this.searchDatFileInDir(dirname(cached), imageDatName, false)
+        if (hdInDir) return hdInDir
       }
     }
 

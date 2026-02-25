@@ -167,6 +167,50 @@
   }
 }
 
+.batch-inline-result-toast {
+  .batch-progress-toast-title {
+    svg {
+      color: #22c55e;
+    }
+  }
+
+  .batch-inline-result-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .batch-inline-result-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    font-size: 12px;
+    color: var(--text-secondary);
+
+    svg {
+      flex-shrink: 0;
+    }
+
+    &.success {
+      color: #16a34a;
+      svg { color: #16a34a; }
+    }
+
+    &.fail {
+      color: #dc2626;
+      svg { color: #dc2626; }
+    }
+
+    &.muted {
+      color: var(--text-tertiary, #999);
+      svg { color: var(--text-tertiary, #999); }
+    }
+  }
+}
+
 // 批量转写结果对话框
 .batch-result-modal {
   width: 420px;
