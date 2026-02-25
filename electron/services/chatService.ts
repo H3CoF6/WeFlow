@@ -84,9 +84,25 @@ export interface Message {
   appMsgLocationLabel?: string
   finderNickname?: string
   finderUsername?: string
+  finderCoverUrl?: string
+  finderAvatar?: string
+  finderDuration?: number
+  // 位置消息
+  locationLat?: number
+  locationLng?: number
+  locationPoiname?: string
+  locationLabel?: string
+  // 音乐消息
+  musicAlbumUrl?: string
+  musicUrl?: string
+  // 礼物消息
+  giftImageUrl?: string
+  giftWish?: string
+  giftPrice?: string
   // 名片消息
   cardUsername?: string     // 名片的微信ID
   cardNickname?: string     // 名片的昵称
+  cardAvatarUrl?: string    // 名片头像 URL
   // 转账消息
   transferPayerUsername?: string   // 转账付款人
   transferReceiverUsername?: string // 转账收款人
@@ -744,15 +760,15 @@ class ChatService {
       }
 
       const batchSize = Math.max(1, limit || this.messageBatchDefault)
-      
+
       // 使用互斥锁保护游标状态访问
       while (this.messageCursorMutex) {
         await new Promise(resolve => setTimeout(resolve, 1))
       }
       this.messageCursorMutex = true
-      
+
       let state = this.messageCursors.get(sessionId)
-      
+
       // 只在以下情况重新创建游标:
       // 1. 没有游标状态
       // 2. offset 为 0 (重新加载会话)
@@ -789,7 +805,7 @@ class ChatService {
         state = { cursor: cursorResult.cursor, fetched: 0, batchSize, startTime, endTime, ascending }
         this.messageCursors.set(sessionId, state)
         this.messageCursorMutex = false
-        
+
         // 如果需要跳过消息(offset > 0),逐批获取但不返回
         // 注意：仅在 offset === 0 时重建游标最安全；
         // 当 startTime/endTime 变化导致重建时，offset 应由前端重置为 0
@@ -890,7 +906,7 @@ class ChatService {
         // 群聊消息：senderUsername 是群成员，需要检查 _db_path 或上下文
         // 单聊消息：senderUsername 应该是 sessionId 或自己
         const isGroupChat = sessionId.includes('@chatroom')
-        
+
         if (isGroupChat) {
           // 群聊消息暂不验证（因为 senderUsername 是群成员，不是 sessionId）
           return true
@@ -927,7 +943,7 @@ class ChatService {
 
       state.fetched += rows.length
       this.messageCursorMutex = false
-      
+
       this.messageCacheService.set(sessionId, filtered)
       return { success: true, messages: filtered, hasMore }
     } catch (e) {
@@ -1246,9 +1262,22 @@ class ChatService {
       let appMsgLocationLabel: string | undefined
       let finderNickname: string | undefined
       let finderUsername: string | undefined
+      let finderCoverUrl: string | undefined
+      let finderAvatar: string | undefined
+      let finderDuration: number | undefined
+      let locationLat: number | undefined
+      let locationLng: number | undefined
+      let locationPoiname: string | undefined
+      let locationLabel: string | undefined
+      let musicAlbumUrl: string | undefined
+      let musicUrl: string | undefined
+      let giftImageUrl: string | undefined
+      let giftWish: string | undefined
+      let giftPrice: string | undefined
       // 名片消息
       let cardUsername: string | undefined
       let cardNickname: string | undefined
+      let cardAvatarUrl: string | undefined
       // 转账消息
       let transferPayerUsername: string | undefined
       let transferReceiverUsername: string | undefined
@@ -1286,6 +1315,15 @@ class ChatService {
         const cardInfo = this.parseCardInfo(content)
         cardUsername = cardInfo.username
         cardNickname = cardInfo.nickname
+        cardAvatarUrl = cardInfo.avatarUrl
+      } else if (localType === 48 && content) {
+        // 位置消息
+        const latStr = this.extractXmlAttribute(content, 'location', 'x') || this.extractXmlAttribute(content, 'location', 'latitude')
+        const lngStr = this.extractXmlAttribute(content, 'location', 'y') || this.extractXmlAttribute(content, 'location', 'longitude')
+        if (latStr) { const v = parseFloat(latStr); if (Number.isFinite(v)) locationLat = v }
+        if (lngStr) { const v = parseFloat(lngStr); if (Number.isFinite(v)) locationLng = v }
+        locationLabel = this.extractXmlAttribute(content, 'location', 'label') || this.extractXmlValue(content, 'label') || undefined
+        locationPoiname = this.extractXmlAttribute(content, 'location', 'poiname') || this.extractXmlValue(content, 'poiname') || undefined
       } else if ((localType === 49 || localType === 8589934592049) && content) {
         // Type 49 消息（链接、文件、小程序、转账等），8589934592049 也是转账类型
         const type49Info = this.parseType49Message(content)
@@ -1327,6 +1365,18 @@ class ChatService {
         appMsgLocationLabel = appMsgLocationLabel || type49Info.appMsgLocationLabel
         finderNickname = finderNickname || type49Info.finderNickname
         finderUsername = finderUsername || type49Info.finderUsername
+        finderCoverUrl = finderCoverUrl || type49Info.finderCoverUrl
+        finderAvatar = finderAvatar || type49Info.finderAvatar
+        finderDuration = finderDuration ?? type49Info.finderDuration
+        locationLat = locationLat ?? type49Info.locationLat
+        locationLng = locationLng ?? type49Info.locationLng
+        locationPoiname = locationPoiname || type49Info.locationPoiname
+        locationLabel = locationLabel || type49Info.locationLabel
+        musicAlbumUrl = musicAlbumUrl || type49Info.musicAlbumUrl
+        musicUrl = musicUrl || type49Info.musicUrl
+        giftImageUrl = giftImageUrl || type49Info.giftImageUrl
+        giftWish = giftWish || type49Info.giftWish
+        giftPrice = giftPrice || type49Info.giftPrice
         chatRecordTitle = chatRecordTitle || type49Info.chatRecordTitle
         chatRecordList = chatRecordList || type49Info.chatRecordList
         transferPayerUsername = transferPayerUsername || type49Info.transferPayerUsername
@@ -1372,8 +1422,21 @@ class ChatService {
         appMsgLocationLabel,
         finderNickname,
         finderUsername,
+        finderCoverUrl,
+        finderAvatar,
+        finderDuration,
+        locationLat,
+        locationLng,
+        locationPoiname,
+        locationLabel,
+        musicAlbumUrl,
+        musicUrl,
+        giftImageUrl,
+        giftWish,
+        giftPrice,
         cardUsername,
         cardNickname,
+        cardAvatarUrl,
         transferPayerUsername,
         transferReceiverUsername,
         chatRecordTitle,
@@ -1874,7 +1937,7 @@ class ChatService {
    * 解析名片消息
    * 格式: <msg username="wxid_xxx" nickname="昵称" ... />
    */
-  private parseCardInfo(content: string): { username?: string; nickname?: string } {
+  private parseCardInfo(content: string): { username?: string; nickname?: string; avatarUrl?: string } {
     try {
       if (!content) return {}
 
@@ -1884,7 +1947,11 @@ class ChatService {
       // 提取 nickname
       const nickname = this.extractXmlAttribute(content, 'msg', 'nickname') || undefined
 
-      return { username, nickname }
+      // 提取头像
+      const avatarUrl = this.extractXmlAttribute(content, 'msg', 'bigheadimgurl') ||
+        this.extractXmlAttribute(content, 'msg', 'smallheadimgurl') || undefined
+
+      return { username, nickname, avatarUrl }
     } catch (e) {
       console.error('[ChatService] 名片解析失败:', e)
       return {}
@@ -1911,6 +1978,19 @@ class ChatService {
     appMsgLocationLabel?: string
     finderNickname?: string
     finderUsername?: string
+    finderCoverUrl?: string
+    finderAvatar?: string
+    finderDuration?: number
+    locationLat?: number
+    locationLng?: number
+    locationPoiname?: string
+    locationLabel?: string
+    musicAlbumUrl?: string
+    musicUrl?: string
+    giftImageUrl?: string
+    giftWish?: string
+    giftPrice?: string
+    cardAvatarUrl?: string
     fileName?: string
     fileSize?: number
     fileExt?: string
@@ -1965,14 +2045,10 @@ class ChatService {
         this.extractXmlValue(content, 'findernickname') ||
         this.extractXmlValue(content, 'finder_nickname')
       const normalized = content.toLowerCase()
-      const isFinder =
-        xmlType === '51' ||
-        normalized.includes('<finder') ||
-        normalized.includes('finderusername') ||
-        normalized.includes('finderobjectid')
-      const isRedPacket = xmlType === '2001' || normalized.includes('hongbao')
-      const isMusic = xmlType === '3' || Boolean(musicUrl || dataUrl)
-      const isLocation = Boolean(locationLabel) || normalized.includes('<location')
+      const isFinder = xmlType === '51'
+      const isRedPacket = xmlType === '2001'
+      const isMusic = xmlType === '3'
+      const isLocation = Boolean(locationLabel)
 
       result.linkTitle = title || undefined
       result.linkUrl = url || undefined
@@ -1988,10 +2064,54 @@ class ChatService {
       result.finderUsername = finderUsername || undefined
       result.finderNickname = finderNickname || undefined
 
+      // 视频号封面/头像/时长
+      if (isFinder) {
+        const finderCover =
+          this.extractXmlValue(content, 'thumbUrl') ||
+          this.extractXmlValue(content, 'coverUrl') ||
+          this.extractXmlValue(content, 'thumburl') ||
+          this.extractXmlValue(content, 'coverurl')
+        if (finderCover) result.finderCoverUrl = finderCover
+        const finderAvatar = this.extractXmlValue(content, 'avatar')
+        if (finderAvatar) result.finderAvatar = finderAvatar
+        const durationStr = this.extractXmlValue(content, 'videoPlayDuration') || this.extractXmlValue(content, 'duration')
+        if (durationStr) {
+          const d = parseInt(durationStr, 10)
+          if (Number.isFinite(d) && d > 0) result.finderDuration = d
+        }
+      }
+
+      // 位置经纬度
+      if (isLocation) {
+        const latAttr = this.extractXmlAttribute(content, 'location', 'x') || this.extractXmlAttribute(content, 'location', 'latitude')
+        const lngAttr = this.extractXmlAttribute(content, 'location', 'y') || this.extractXmlAttribute(content, 'location', 'longitude')
+        if (latAttr) { const v = parseFloat(latAttr); if (Number.isFinite(v)) result.locationLat = v }
+        if (lngAttr) { const v = parseFloat(lngAttr); if (Number.isFinite(v)) result.locationLng = v }
+        result.locationPoiname = this.extractXmlAttribute(content, 'location', 'poiname') || locationLabel || undefined
+        result.locationLabel = this.extractXmlAttribute(content, 'location', 'label') || undefined
+      }
+
+      // 音乐专辑封面
+      if (isMusic) {
+        const albumUrl = this.extractXmlValue(content, 'songalbumurl')
+        if (albumUrl) result.musicAlbumUrl = albumUrl
+        result.musicUrl = musicUrl || dataUrl || url || undefined
+      }
+
+      // 礼物消息
+      const isGift = xmlType === '115'
+      if (isGift) {
+        result.giftWish = this.extractXmlValue(content, 'wishmessage') || undefined
+        result.giftImageUrl = this.extractXmlValue(content, 'skuimgurl') || undefined
+        result.giftPrice = this.extractXmlValue(content, 'skuprice') || undefined
+      }
+
       if (isFinder) {
         result.appMsgKind = 'finder'
       } else if (isRedPacket) {
         result.appMsgKind = 'red-packet'
+      } else if (isGift) {
+        result.appMsgKind = 'gift'
       } else if (isLocation) {
         result.appMsgKind = 'location'
       } else if (isMusic) {
@@ -4286,6 +4406,7 @@ class ChatService {
       const cardInfo = this.parseCardInfo(rawContent)
       msg.cardUsername = cardInfo.username
       msg.cardNickname = cardInfo.nickname
+      msg.cardAvatarUrl = cardInfo.avatarUrl
     }
 
     if (rawContent && (rawContent.includes('<appmsg') || rawContent.includes('&lt;appmsg'))) {

@@ -3944,16 +3944,24 @@ function MessageBubble({
     // 名片消息
     if (isCard) {
       const cardName = message.cardNickname || message.cardUsername || '未知联系人'
+      const cardAvatar = message.cardAvatarUrl
       return (
         <div className="card-message">
           <div className="card-icon">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
+            {cardAvatar ? (
+              <img src={cardAvatar} alt="" style={{ width: '40px', height: '40px', objectFit: 'cover', borderRadius: '8px' }} referrerPolicy="no-referrer" />
+            ) : (
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                <circle cx="12" cy="7" r="4" />
+              </svg>
+            )}
           </div>
           <div className="card-info">
             <div className="card-name">{cardName}</div>
+            {message.cardUsername && message.cardUsername !== message.cardNickname && (
+              <div className="card-wxid">微信号: {message.cardUsername}</div>
+            )}
             <div className="card-label">个人名片</div>
           </div>
         </div>
@@ -3972,7 +3980,319 @@ function MessageBubble({
       )
     }
 
+    // 位置消息
+    if (message.localType === 48) {
+      const raw = message.rawContent || ''
+      const poiname = raw.match(/poiname="([^"]*)"/)?.[1] || message.locationPoiname || '位置'
+      const label = raw.match(/label="([^"]*)"/)?.[1] || message.locationLabel || ''
+      const lat = parseFloat(raw.match(/x="([^"]*)"/)?.[1] || String(message.locationLat || 0))
+      const lng = parseFloat(raw.match(/y="([^"]*)"/)?.[1] || String(message.locationLng || 0))
+      const mapTileUrl = (lat && lng)
+        ? `https://restapi.amap.com/v3/staticmap?location=${lng},${lat}&zoom=15&size=280*100&markers=mid,,A:${lng},${lat}&key=e1dedc6bfbb8413ab2185e7a0e21f0a1`
+        : ''
+      return (
+        <div className="location-message" onClick={() => window.electronAPI.shell.openExternal(`https://uri.amap.com/marker?position=${lng},${lat}&name=${encodeURIComponent(poiname || label)}`)}>
+          <div className="location-text">
+            <div className="location-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                <circle cx="12" cy="10" r="3" />
+              </svg>
+            </div>
+            <div className="location-info">
+              {poiname && <div className="location-name">{poiname}</div>}
+              {label && <div className="location-label">{label}</div>}
+            </div>
+          </div>
+          {mapTileUrl && (
+            <div className="location-map">
+              <img src={mapTileUrl} alt="地图" referrerPolicy="no-referrer" />
+            </div>
+          )}
+        </div>
+      )
+    }
+
     // 链接消息 (AppMessage)
+    const appMsgRichPreview = (() => {
+      const rawXml = message.rawContent || ''
+      if (!rawXml || (!rawXml.includes('<appmsg') && !rawXml.includes('&lt;appmsg'))) return null
+
+      let doc: Document | null = null
+      const getDoc = () => {
+        if (doc) return doc
+        try {
+          const start = rawXml.indexOf('<msg>')
+          const xml = start >= 0 ? rawXml.slice(start) : rawXml
+          doc = new DOMParser().parseFromString(xml, 'text/xml')
+        } catch {
+          doc = null
+        }
+        return doc
+      }
+      const q = (selector: string) => getDoc()?.querySelector(selector)?.textContent?.trim() || ''
+
+      const xmlType = message.xmlType || q('appmsg > type') || q('type')
+      const title = message.linkTitle || q('title') || cleanMessageContent(message.parsedContent) || 'Card'
+      const desc = message.appMsgDesc || q('des')
+      const url = message.linkUrl || q('url')
+      const thumbUrl = message.linkThumb || message.appMsgThumbUrl || q('thumburl') || q('cdnthumburl') || q('cover') || q('coverurl')
+      const musicUrl = message.appMsgMusicUrl || message.appMsgDataUrl || q('musicurl') || q('playurl') || q('dataurl') || q('lowurl')
+      const sourceName = message.appMsgSourceName || q('sourcename')
+      const appName = message.appMsgAppName || q('appname')
+      const sourceUsername = message.appMsgSourceUsername || q('sourceusername')
+      const finderName =
+        message.finderNickname ||
+        message.finderUsername ||
+        q('findernickname') ||
+        q('finder_nickname') ||
+        q('finderusername') ||
+        q('finder_username')
+
+      const lower = rawXml.toLowerCase()
+
+      const kind = message.appMsgKind || (
+        (xmlType === '2001' || lower.includes('hongbao')) ? 'red-packet'
+          : (xmlType === '115' ? 'gift'
+            : ((xmlType === '33' || xmlType === '36') ? 'miniapp'
+              : (((xmlType === '5' || xmlType === '49') && (sourceUsername.startsWith('gh_') || !!sourceName || appName.includes('公众号'))) ? 'official-link'
+                : (xmlType === '51' ? 'finder'
+                  : (xmlType === '3' ? 'music'
+                    : ((xmlType === '5' || xmlType === '49') ? 'link' // Fallback for standard links
+                      : (!!musicUrl ? 'music' : '')))))))
+      )
+
+      if (!kind) return null
+
+      // 对视频号提取真实标题，避免出现 "当前版本不支持该内容"
+      let displayTitle = title
+      if (kind === 'finder' && title.includes('不支持')) {
+        displayTitle = desc || ''
+      }
+
+      const openExternal = (e: React.MouseEvent, nextUrl?: string) => {
+        if (!nextUrl) return
+        e.stopPropagation()
+        if (window.electronAPI?.shell?.openExternal) {
+          window.electronAPI.shell.openExternal(nextUrl)
+        } else {
+          window.open(nextUrl, '_blank')
+        }
+      }
+
+      const metaLabel =
+        kind === 'red-packet' ? '红包'
+          : kind === 'finder' ? (finderName || '视频号')
+            : kind === 'location' ? '位置'
+              : kind === 'music' ? (sourceName || appName || '音乐')
+                : (sourceName || appName || (sourceUsername.startsWith('gh_') ? '公众号' : ''))
+
+      const renderCard = (cardKind: string, clickableUrl?: string) => (
+        <div
+          className={`link-message appmsg-rich-card ${cardKind}`}
+          onClick={clickableUrl ? (e) => openExternal(e, clickableUrl) : undefined}
+          title={clickableUrl}
+        >
+          <div className="link-header">
+            <div className="link-title" title={title}>{title}</div>
+            {metaLabel ? <div className="appmsg-meta-badge">{metaLabel}</div> : null}
+          </div>
+          <div className="link-body">
+            <div className="link-desc-block">
+              {desc ? <div className="link-desc" title={desc}>{desc}</div> : null}
+            </div>
+            {thumbUrl ? (
+              <img
+                src={thumbUrl}
+                alt=""
+                className={`link-thumb${((cardKind === 'miniapp') || /\.svg(?:$|\?)/i.test(thumbUrl)) ? ' theme-adaptive' : ''}`}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <div className={`link-thumb-placeholder ${cardKind}`}>{cardKind.slice(0, 2).toUpperCase()}</div>
+            )}
+          </div>
+        </div>
+      )
+
+      if (kind === 'red-packet') {
+        // 专属红包卡片
+        const greeting = (() => {
+          try {
+            const d = getDoc()
+            if (!d) return ''
+            return d.querySelector('receivertitle')?.textContent?.trim() ||
+              d.querySelector('sendertitle')?.textContent?.trim() || ''
+          } catch { return '' }
+        })()
+        return (
+          <div className="hongbao-message">
+            <div className="hongbao-icon">
+              <svg width="32" height="32" viewBox="0 0 40 40" fill="none">
+                <rect x="4" y="6" width="32" height="28" rx="4" fill="white" fillOpacity="0.3" />
+                <rect x="4" y="6" width="32" height="14" rx="4" fill="white" fillOpacity="0.2" />
+                <circle cx="20" cy="20" r="6" fill="white" fillOpacity="0.4" />
+                <text x="20" y="24" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">¥</text>
+              </svg>
+            </div>
+            <div className="hongbao-info">
+              <div className="hongbao-greeting">{greeting || '恭喜发财，大吉大利'}</div>
+              <div className="hongbao-label">微信红包</div>
+            </div>
+          </div>
+        )
+      }
+
+      if (kind === 'gift') {
+        // 礼物卡片
+        const giftImg = message.giftImageUrl || thumbUrl
+        const giftWish = message.giftWish || title || '送你一份心意'
+        const giftPriceRaw = message.giftPrice
+        const giftPriceYuan = giftPriceRaw ? (parseInt(giftPriceRaw) / 100).toFixed(2) : ''
+        return (
+          <div className="gift-message">
+            {giftImg && <img className="gift-img" src={giftImg} alt="" referrerPolicy="no-referrer" />}
+            <div className="gift-info">
+              <div className="gift-wish">{giftWish}</div>
+              {giftPriceYuan && <div className="gift-price">¥{giftPriceYuan}</div>}
+              <div className="gift-label">微信礼物</div>
+            </div>
+          </div>
+        )
+      }
+
+      if (kind === 'finder') {
+        // 视频号专属卡片
+        const coverUrl = message.finderCoverUrl || thumbUrl
+        const duration = message.finderDuration
+        const authorName = finderName || ''
+        const authorAvatar = message.finderAvatar
+        const fmtDuration = duration ? `${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, '0')}` : ''
+        return (
+          <div className="channel-video-card" onClick={url ? (e) => openExternal(e, url) : undefined}>
+            <div className="channel-video-cover">
+              {coverUrl ? (
+                <img src={coverUrl} alt="" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="channel-video-cover-placeholder">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
+                </div>
+              )}
+              {fmtDuration && <span className="channel-video-duration">{fmtDuration}</span>}
+            </div>
+            <div className="channel-video-info">
+              <div className="channel-video-title">{displayTitle || '视频号视频'}</div>
+              <div className="channel-video-author">
+                {authorAvatar && <img className="channel-video-avatar" src={authorAvatar} alt="" referrerPolicy="no-referrer" />}
+                <span>{authorName || '视频号'}</span>
+              </div>
+            </div>
+          </div>
+        )
+      }
+
+
+
+      if (kind === 'music') {
+        // 音乐专属卡片
+        const albumUrl = message.musicAlbumUrl || thumbUrl
+        const playUrl = message.musicUrl || musicUrl || url
+        const songTitle = title || '未知歌曲'
+        const artist = desc || ''
+        const appLabel = sourceName || appName || ''
+        return (
+          <div className="music-message" onClick={playUrl ? (e) => openExternal(e, playUrl) : undefined}>
+            <div className="music-cover">
+              {albumUrl ? (
+                <img src={albumUrl} alt="" referrerPolicy="no-referrer" />
+              ) : (
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+              )}
+            </div>
+            <div className="music-info">
+              <div className="music-title">{songTitle}</div>
+              {artist && <div className="music-artist">{artist}</div>}
+              {appLabel && <div className="music-source">{appLabel}</div>}
+            </div>
+          </div>
+        )
+      }
+
+      if (kind === 'official-link') {
+        const authorAvatar = q('publisher > headimg') || q('brand_info > headimgurl') || q('appmsg > avatar') || message.cardAvatarUrl
+        const authorName = q('publisher > nickname') || sourceName || appName || '公众号'
+        const coverPic = q('mmreader > category > item > cover') || thumbUrl
+        const digest = q('mmreader > category > item > digest') || desc
+        const articleTitle = q('mmreader > category > item > title') || title
+
+        return (
+          <div className="official-message" onClick={url ? (e) => openExternal(e, url) : undefined}>
+            <div className="official-header">
+              {authorAvatar ? (
+                <img src={authorAvatar} alt="" className="official-avatar" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="official-avatar-placeholder">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                  </svg>
+                </div>
+              )}
+              <span className="official-name">{authorName}</span>
+            </div>
+            <div className="official-body">
+              {coverPic ? (
+                <div className="official-cover-wrapper">
+                  <img src={coverPic} alt="" className="official-cover" referrerPolicy="no-referrer" />
+                  <div className="official-title-overlay">{articleTitle}</div>
+                </div>
+              ) : (
+                <div className="official-title-text">{articleTitle}</div>
+              )}
+              {digest && <div className="official-digest">{digest}</div>}
+            </div>
+          </div>
+        )
+      }
+
+      if (kind === 'link') return renderCard('link', url || undefined)
+      if (kind === 'card') return renderCard('card', url || undefined)
+      if (kind === 'miniapp') {
+        return (
+          <div className="miniapp-message miniapp-message-rich">
+            <div className="miniapp-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+              </svg>
+            </div>
+            <div className="miniapp-info">
+              <div className="miniapp-title">{title}</div>
+              <div className="miniapp-label">{metaLabel || '小程序'}</div>
+            </div>
+            {thumbUrl ? (
+              <img
+                src={thumbUrl}
+                alt=""
+                className={`miniapp-thumb${/\.svg(?:$|\?)/i.test(thumbUrl) ? ' theme-adaptive' : ''}`}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            ) : null}
+          </div>
+        )
+      }
+      return null
+    })()
+
+    if (appMsgRichPreview) {
+      return appMsgRichPreview
+    }
+
     const isAppMsg = message.rawContent?.includes('<appmsg') || (message.parsedContent && message.parsedContent.includes('<appmsg'))
 
     if (isAppMsg) {

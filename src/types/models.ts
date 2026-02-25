@@ -75,12 +75,28 @@ export interface Message {
   appMsgLocationLabel?: string
   finderNickname?: string
   finderUsername?: string
+  finderCoverUrl?: string   // 视频号封面图
+  finderAvatar?: string     // 视频号作者头像
+  finderDuration?: number   // 视频号时长(秒)
+  // 位置消息
+  locationLat?: number      // 纬度
+  locationLng?: number      // 经度
+  locationPoiname?: string  // 地点名称
+  locationLabel?: string    // 详细地址
+  // 音乐消息
+  musicAlbumUrl?: string    // 专辑封面
+  musicUrl?: string         // 播放链接
+  // 礼物消息
+  giftImageUrl?: string     // 礼物商品图
+  giftWish?: string         // 祝福语
+  giftPrice?: string        // 价格(分)
   // 转账消息
   transferPayerUsername?: string    // 转账付款方 wxid
   transferReceiverUsername?: string // 转账收款方 wxid
   // 名片消息
   cardUsername?: string     // 名片的微信ID
   cardNickname?: string     // 名片的昵称
+  cardAvatarUrl?: string    // 名片头像 URL
   // 聊天记录
   chatRecordTitle?: string  // 聊天记录标题
   chatRecordList?: ChatRecordItem[]  // 聊天记录列表
