@@ -1031,12 +1031,65 @@ function registerIpcHandlers() {
       ? mainWindow
       : (BrowserWindow.fromWebContents(event.sender) || undefined)
 
-    return windowsHelloService.verify(message, targetWin)
+    const result = await windowsHelloService.verify(message, targetWin)
+
+    // Hello 验证成功后，自动用 authHelloSecret 中的密码解锁密钥
+    if (result && configService) {
+      const secret = configService.getHelloSecret()
+      if (secret && configService.isLockMode()) {
+        configService.unlock(secret)
+      }
+    }
+
+    return result
   })
 
-  // 验证应用锁状态（带签名校验，防篡改）
+  // 验证应用锁状态（检测 lock: 前缀，防篡改）
   ipcMain.handle('auth:verifyEnabled', async () => {
     return configService?.verifyAuthEnabled() ?? false
+  })
+
+  // 密码解锁（验证 + 解密密钥到内存）
+  ipcMain.handle('auth:unlock', async (_event, password: string) => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    return configService.unlock(password)
+  })
+
+  // 开启应用锁
+  ipcMain.handle('auth:enableLock', async (_event, password: string) => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    return configService.enableLock(password)
+  })
+
+  // 关闭应用锁
+  ipcMain.handle('auth:disableLock', async (_event, password: string) => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    return configService.disableLock(password)
+  })
+
+  // 修改密码
+  ipcMain.handle('auth:changePassword', async (_event, oldPassword: string, newPassword: string) => {
+    if (!configService) return { success: false, error: '配置服务未初始化' }
+    return configService.changePassword(oldPassword, newPassword)
+  })
+
+  // 设置 Hello Secret
+  ipcMain.handle('auth:setHelloSecret', async (_event, password: string) => {
+    if (!configService) return { success: false }
+    configService.setHelloSecret(password)
+    return { success: true }
+  })
+
+  // 清除 Hello Secret
+  ipcMain.handle('auth:clearHelloSecret', async () => {
+    if (!configService) return { success: false }
+    configService.clearHelloSecret()
+    return { success: true }
+  })
+
+  // 检查是否处于 lock: 模式
+  ipcMain.handle('auth:isLockMode', async () => {
+    return configService?.isLockMode() ?? false
   })
 
   // 导出相关

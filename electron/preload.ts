@@ -25,7 +25,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 认证
   auth: {
     hello: (message?: string) => ipcRenderer.invoke('auth:hello', message),
-    verifyEnabled: () => ipcRenderer.invoke('auth:verifyEnabled')
+    verifyEnabled: () => ipcRenderer.invoke('auth:verifyEnabled'),
+    unlock: (password: string) => ipcRenderer.invoke('auth:unlock', password),
+    enableLock: (password: string) => ipcRenderer.invoke('auth:enableLock', password),
+    disableLock: (password: string) => ipcRenderer.invoke('auth:disableLock', password),
+    changePassword: (oldPassword: string, newPassword: string) => ipcRenderer.invoke('auth:changePassword', oldPassword, newPassword),
+    setHelloSecret: (password: string) => ipcRenderer.invoke('auth:setHelloSecret', password),
+    clearHelloSecret: () => ipcRenderer.invoke('auth:clearHelloSecret'),
+    isLockMode: () => ipcRenderer.invoke('auth:isLockMode')
   },
 
 

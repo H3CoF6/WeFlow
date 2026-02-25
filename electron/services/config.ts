@@ -1,15 +1,17 @@
 import { join } from 'path'
 import { app, safeStorage } from 'electron'
+import crypto from 'crypto'
 import Store from 'electron-store'
 
-// safeStorage 加密后的前缀标记，用于区分明文和密文
-const SAFE_PREFIX = 'safe:'
+// 加密前缀标记
+const SAFE_PREFIX = 'safe:'  // safeStorage 加密（普通模式）
+const LOCK_PREFIX = 'lock:'  // 密码派生密钥加密（锁定模式）
 
 interface ConfigSchema {
   // 数据库相关
-  dbPath: string        // 数据库根目录 (xwechat_files)
-  decryptKey: string    // 解密密钥
-  myWxid: string        // 当前用户 wxid
+  dbPath: string
+  decryptKey: string
+  myWxid: string
   onboardingDone: boolean
   imageXorKey: number
   imageAesKey: string
@@ -17,7 +19,6 @@ interface ConfigSchema {
 
   // 缓存相关
   cachePath: string
-
   lastOpenedDb: string
   lastSession: string
 
@@ -35,10 +36,11 @@ interface ConfigSchema {
   exportDefaultConcurrency: number
   analyticsExcludedUsernames: string[]
 
-  // 安全相关（通过 safeStorage 加密存储，JSON 中为密文）
+  // 安全相关
   authEnabled: boolean
-  authPassword: string // SHA-256 hash
+  authPassword: string      // SHA-256 hash（safeStorage 加密）
   authUseHello: boolean
+  authHelloSecret: string   // 原始密码（safeStorage 加密，Hello 解锁时使用）
 
   // 更新相关
   ignoredUpdateVersion: string
@@ -51,14 +53,22 @@ interface ConfigSchema {
   wordCloudExcludeWords: string[]
 }
 
-// 需要 safeStorage 加密的字段集合
+// 需要 safeStorage 加密的字段（普通模式）
 const ENCRYPTED_STRING_KEYS: Set<string> = new Set(['decryptKey', 'imageAesKey', 'authPassword'])
 const ENCRYPTED_BOOL_KEYS: Set<string> = new Set(['authEnabled', 'authUseHello'])
 const ENCRYPTED_NUMBER_KEYS: Set<string> = new Set(['imageXorKey'])
 
+// 需要与密码绑定的敏感密钥字段（锁定模式时用 lock: 加密）
+const LOCKABLE_STRING_KEYS: Set<string> = new Set(['decryptKey', 'imageAesKey'])
+const LOCKABLE_NUMBER_KEYS: Set<string> = new Set(['imageXorKey'])
+
 export class ConfigService {
   private static instance: ConfigService
   private store!: Store<ConfigSchema>
+
+  // 锁定模式运行时状态
+  private unlockedKeys: Map<string, any> = new Map()
+  private unlockPassword: string | null = null
 
   static getInstance(): ConfigService {
     if (!ConfigService.instance) {
@@ -83,7 +93,6 @@ export class ConfigService {
         imageAesKey: '',
         wxidConfigs: {},
         cachePath: '',
-
         lastOpenedDb: '',
         lastSession: '',
         theme: 'system',
@@ -98,11 +107,10 @@ export class ConfigService {
         transcribeLanguages: ['zh'],
         exportDefaultConcurrency: 2,
         analyticsExcludedUsernames: [],
-
         authEnabled: false,
         authPassword: '',
         authUseHello: false,
-
+        authHelloSecret: '',
         ignoredUpdateVersion: '',
         notificationEnabled: true,
         notificationPosition: 'top-right',
@@ -111,37 +119,52 @@ export class ConfigService {
         wordCloudExcludeWords: []
       }
     })
-
-    // 首次启动时迁移旧版明文安全字段
     this.migrateAuthFields()
   }
+
+  // === 状态查询 ===
+
+  isLockMode(): boolean {
+    const raw: any = this.store.get('decryptKey')
+    return typeof raw === 'string' && raw.startsWith(LOCK_PREFIX)
+  }
+
+  isUnlocked(): boolean {
+    return !this.isLockMode() || this.unlockedKeys.size > 0
+  }
+
+  // === get / set ===
 
   get<K extends keyof ConfigSchema>(key: K): ConfigSchema[K] {
     const raw = this.store.get(key)
 
-    // 布尔型加密字段：存储为加密字符串，读取时解密还原为布尔值
     if (ENCRYPTED_BOOL_KEYS.has(key)) {
       const str = typeof raw === 'string' ? raw : ''
       if (!str || !str.startsWith(SAFE_PREFIX)) return raw
-      const decrypted = this.safeDecrypt(str)
-      return (decrypted === 'true') as ConfigSchema[K]
+      return (this.safeDecrypt(str) === 'true') as ConfigSchema[K]
     }
 
-    // 数字型加密字段：存储为加密字符串，读取时解密还原为数字
     if (ENCRYPTED_NUMBER_KEYS.has(key)) {
       const str = typeof raw === 'string' ? raw : ''
-      if (!str || !str.startsWith(SAFE_PREFIX)) return raw
-      const decrypted = this.safeDecrypt(str)
-      const num = Number(decrypted)
+      if (!str) return raw
+      if (str.startsWith(LOCK_PREFIX)) {
+        const cached = this.unlockedKeys.get(key as string)
+        return (cached !== undefined ? cached : 0) as ConfigSchema[K]
+      }
+      if (!str.startsWith(SAFE_PREFIX)) return raw
+      const num = Number(this.safeDecrypt(str))
       return (Number.isFinite(num) ? num : 0) as ConfigSchema[K]
     }
 
-    // 字符串型加密字段
     if (ENCRYPTED_STRING_KEYS.has(key) && typeof raw === 'string') {
+      if (key === 'authPassword') return this.safeDecrypt(raw) as ConfigSchema[K]
+      if (raw.startsWith(LOCK_PREFIX)) {
+        const cached = this.unlockedKeys.get(key as string)
+        return (cached !== undefined ? cached : '') as ConfigSchema[K]
+      }
       return this.safeDecrypt(raw) as ConfigSchema[K]
     }
 
-    // wxidConfigs 中嵌套的敏感字段
     if (key === 'wxidConfigs' && raw && typeof raw === 'object') {
       return this.decryptWxidConfigs(raw as any) as ConfigSchema[K]
     }
@@ -151,28 +174,38 @@ export class ConfigService {
 
   set<K extends keyof ConfigSchema>(key: K, value: ConfigSchema[K]): void {
     let toStore = value
+    const inLockMode = this.isLockMode() && this.unlockPassword
 
-    // 布尔型加密字段：序列化为字符串后加密
     if (ENCRYPTED_BOOL_KEYS.has(key)) {
       toStore = this.safeEncrypt(String(value)) as ConfigSchema[K]
-    }
-    // 数字型加密字段：序列化为字符串后加密
-    else if (ENCRYPTED_NUMBER_KEYS.has(key)) {
-      toStore = this.safeEncrypt(String(value)) as ConfigSchema[K]
-    }
-    // 字符串型加密字段
-    else if (ENCRYPTED_STRING_KEYS.has(key) && typeof value === 'string') {
-      toStore = this.safeEncrypt(value) as ConfigSchema[K]
-    }
-    // wxidConfigs 中嵌套的敏感字段
-    else if (key === 'wxidConfigs' && value && typeof value === 'object') {
-      toStore = this.encryptWxidConfigs(value as any) as ConfigSchema[K]
+    } else if (ENCRYPTED_NUMBER_KEYS.has(key)) {
+      if (inLockMode && LOCKABLE_NUMBER_KEYS.has(key)) {
+        toStore = this.lockEncrypt(String(value), this.unlockPassword!) as ConfigSchema[K]
+        this.unlockedKeys.set(key as string, value)
+      } else {
+        toStore = this.safeEncrypt(String(value)) as ConfigSchema[K]
+      }
+    } else if (ENCRYPTED_STRING_KEYS.has(key) && typeof value === 'string') {
+      if (key === 'authPassword') {
+        toStore = this.safeEncrypt(value) as ConfigSchema[K]
+      } else if (inLockMode && LOCKABLE_STRING_KEYS.has(key)) {
+        toStore = this.lockEncrypt(value, this.unlockPassword!) as ConfigSchema[K]
+        this.unlockedKeys.set(key as string, value)
+      } else {
+        toStore = this.safeEncrypt(value) as ConfigSchema[K]
+      }
+    } else if (key === 'wxidConfigs' && value && typeof value === 'object') {
+      if (inLockMode) {
+        toStore = this.lockEncryptWxidConfigs(value as any) as ConfigSchema[K]
+      } else {
+        toStore = this.encryptWxidConfigs(value as any) as ConfigSchema[K]
+      }
     }
 
     this.store.set(key, toStore)
   }
 
-  // === safeStorage 加解密 ===
+  // === 加密/解密工具 ===
 
   private safeEncrypt(plaintext: string): string {
     if (!plaintext) return ''
@@ -184,9 +217,7 @@ export class ConfigService {
 
   private safeDecrypt(stored: string): string {
     if (!stored) return ''
-    if (!stored.startsWith(SAFE_PREFIX)) {
-      return stored
-    }
+    if (!stored.startsWith(SAFE_PREFIX)) return stored
     if (!safeStorage.isEncryptionAvailable()) return ''
     try {
       const buf = Buffer.from(stored.slice(SAFE_PREFIX.length), 'base64')
@@ -196,67 +227,52 @@ export class ConfigService {
     }
   }
 
-  // === 旧版本迁移 ===
-
-  // 将旧版明文 auth 字段迁移为 safeStorage 加密格式
-  private migrateAuthFields(): void {
-    if (!safeStorage.isEncryptionAvailable()) return
-
-    // 迁移字符串型字段（decryptKey, imageAesKey, authPassword）
-    for (const key of ENCRYPTED_STRING_KEYS) {
-      const raw = this.store.get(key as keyof ConfigSchema)
-      if (typeof raw === 'string' && raw && !raw.startsWith(SAFE_PREFIX)) {
-        this.store.set(key as any, this.safeEncrypt(raw))
-      }
-    }
-
-    // 迁移布尔型字段（authEnabled, authUseHello）
-    for (const key of ENCRYPTED_BOOL_KEYS) {
-      const raw = this.store.get(key as keyof ConfigSchema)
-      // 如果是原始布尔值（未加密），转为加密字符串
-      if (typeof raw === 'boolean') {
-        this.store.set(key as any, this.safeEncrypt(String(raw)))
-      }
-    }
-
-    // 迁移数字型字段（imageXorKey）
-    for (const key of ENCRYPTED_NUMBER_KEYS) {
-      const raw = this.store.get(key as keyof ConfigSchema)
-      // 如果是原始数字值（未加密），转为加密字符串
-      if (typeof raw === 'number') {
-        this.store.set(key as any, this.safeEncrypt(String(raw)))
-      }
-    }
-
-    // 迁移 wxidConfigs 中的嵌套敏感字段
-    const wxidConfigs = this.store.get('wxidConfigs')
-    if (wxidConfigs && typeof wxidConfigs === 'object') {
-      let needsUpdate = false
-      const updated = { ...wxidConfigs }
-      for (const [wxid, cfg] of Object.entries(updated)) {
-        if (cfg.decryptKey && !cfg.decryptKey.startsWith(SAFE_PREFIX)) {
-          updated[wxid] = { ...cfg, decryptKey: this.safeEncrypt(cfg.decryptKey) }
-          needsUpdate = true
-        }
-        if (cfg.imageAesKey && !cfg.imageAesKey.startsWith(SAFE_PREFIX)) {
-          updated[wxid] = { ...updated[wxid], imageAesKey: this.safeEncrypt(cfg.imageAesKey) }
-          needsUpdate = true
-        }
-        if (cfg.imageXorKey !== undefined && typeof cfg.imageXorKey === 'number') {
-          updated[wxid] = { ...updated[wxid], imageXorKey: this.safeEncrypt(String(cfg.imageXorKey)) as any }
-          needsUpdate = true
-        }
-      }
-      if (needsUpdate) {
-        this.store.set('wxidConfigs', updated)
-      }
-    }
-
-    // 清理旧版 authSignature 字段（不再需要）
-    this.store.delete('authSignature' as any)
+  private lockEncrypt(plaintext: string, password: string): string {
+    if (!plaintext) return ''
+    const salt = crypto.randomBytes(16)
+    const iv = crypto.randomBytes(12)
+    const derivedKey = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256')
+    const cipher = crypto.createCipheriv('aes-256-gcm', derivedKey, iv)
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+    const authTag = cipher.getAuthTag()
+    const combined = Buffer.concat([salt, iv, authTag, encrypted])
+    return LOCK_PREFIX + combined.toString('base64')
   }
 
-  // === wxidConfigs 加解密 ===
+  private lockDecrypt(stored: string, password: string): string | null {
+    if (!stored || !stored.startsWith(LOCK_PREFIX)) return null
+    try {
+      const combined = Buffer.from(stored.slice(LOCK_PREFIX.length), 'base64')
+      const salt = combined.subarray(0, 16)
+      const iv = combined.subarray(16, 28)
+      const authTag = combined.subarray(28, 44)
+      const ciphertext = combined.subarray(44)
+      const derivedKey = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256')
+      const decipher = crypto.createDecipheriv('aes-256-gcm', derivedKey, iv)
+      decipher.setAuthTag(authTag)
+      const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+      return decrypted.toString('utf8')
+    } catch {
+      return null
+    }
+  }
+
+  // 通过尝试解密 lock: 字段来验证密码是否正确（当 authPassword 被删除时使用）
+  private verifyPasswordByDecrypt(password: string): boolean {
+    // 依次尝试解密任意一个 lock: 字段，GCM authTag 会验证密码正确性
+    const lockFields = ['decryptKey', 'imageAesKey', 'imageXorKey'] as const
+    for (const key of lockFields) {
+      const raw: any = this.store.get(key as any)
+      if (typeof raw === 'string' && raw.startsWith(LOCK_PREFIX)) {
+        const result = this.lockDecrypt(raw, password)
+        // lockDecrypt 返回 null 表示解密失败（密码错误），非 null 表示成功
+        return result !== null
+      }
+    }
+    return false
+  }
+
+  // === wxidConfigs 加密/解密 ===
 
   private encryptWxidConfigs(configs: ConfigSchema['wxidConfigs']): ConfigSchema['wxidConfigs'] {
     const result: ConfigSchema['wxidConfigs'] = {}
@@ -271,74 +287,367 @@ export class ConfigService {
     return result
   }
 
+  private decryptLockedWxidConfigs(password: string): void {
+    const wxidConfigs = this.store.get('wxidConfigs')
+    if (!wxidConfigs || typeof wxidConfigs !== 'object') return
+    for (const [wxid, cfg] of Object.entries(wxidConfigs) as [string, any][]) {
+      if (cfg.decryptKey && typeof cfg.decryptKey === 'string' && cfg.decryptKey.startsWith(LOCK_PREFIX)) {
+        const d = this.lockDecrypt(cfg.decryptKey, password)
+        if (d !== null) this.unlockedKeys.set(`wxid:${wxid}:decryptKey`, d)
+      }
+      if (cfg.imageAesKey && typeof cfg.imageAesKey === 'string' && cfg.imageAesKey.startsWith(LOCK_PREFIX)) {
+        const d = this.lockDecrypt(cfg.imageAesKey, password)
+        if (d !== null) this.unlockedKeys.set(`wxid:${wxid}:imageAesKey`, d)
+      }
+      if (cfg.imageXorKey && typeof cfg.imageXorKey === 'string' && cfg.imageXorKey.startsWith(LOCK_PREFIX)) {
+        const d = this.lockDecrypt(cfg.imageXorKey, password)
+        if (d !== null) this.unlockedKeys.set(`wxid:${wxid}:imageXorKey`, Number(d))
+      }
+    }
+  }
+
   private decryptWxidConfigs(configs: ConfigSchema['wxidConfigs']): ConfigSchema['wxidConfigs'] {
     const result: ConfigSchema['wxidConfigs'] = {}
-    for (const [wxid, cfg] of Object.entries(configs)) {
-      result[wxid] = { ...cfg }
-      if (cfg.decryptKey) result[wxid].decryptKey = this.safeDecrypt(cfg.decryptKey)
-      if (cfg.imageAesKey) result[wxid].imageAesKey = this.safeDecrypt(cfg.imageAesKey)
-      if (cfg.imageXorKey !== undefined) {
-        const raw = cfg.imageXorKey as any
-        if (typeof raw === 'string' && raw.startsWith(SAFE_PREFIX)) {
-          const decrypted = this.safeDecrypt(raw)
-          const num = Number(decrypted)
+    for (const [wxid, cfg] of Object.entries(configs) as [string, any][]) {
+      result[wxid] = { ...cfg, updatedAt: cfg.updatedAt }
+      // decryptKey
+      if (typeof cfg.decryptKey === 'string') {
+        if (cfg.decryptKey.startsWith(LOCK_PREFIX)) {
+          result[wxid].decryptKey = this.unlockedKeys.get(`wxid:${wxid}:decryptKey`) ?? ''
+        } else {
+          result[wxid].decryptKey = this.safeDecrypt(cfg.decryptKey)
+        }
+      }
+      // imageAesKey
+      if (typeof cfg.imageAesKey === 'string') {
+        if (cfg.imageAesKey.startsWith(LOCK_PREFIX)) {
+          result[wxid].imageAesKey = this.unlockedKeys.get(`wxid:${wxid}:imageAesKey`) ?? ''
+        } else {
+          result[wxid].imageAesKey = this.safeDecrypt(cfg.imageAesKey)
+        }
+      }
+      // imageXorKey
+      if (typeof cfg.imageXorKey === 'string') {
+        if (cfg.imageXorKey.startsWith(LOCK_PREFIX)) {
+          result[wxid].imageXorKey = this.unlockedKeys.get(`wxid:${wxid}:imageXorKey`) ?? 0
+        } else if (cfg.imageXorKey.startsWith(SAFE_PREFIX)) {
+          const num = Number(this.safeDecrypt(cfg.imageXorKey))
           result[wxid].imageXorKey = Number.isFinite(num) ? num : 0
         }
       }
     }
     return result
   }
+  private lockEncryptWxidConfigs(configs: ConfigSchema['wxidConfigs']): ConfigSchema['wxidConfigs'] {
+    const result: ConfigSchema['wxidConfigs'] = {}
+    for (const [wxid, cfg] of Object.entries(configs)) {
+      result[wxid] = { ...cfg }
+      if (cfg.decryptKey) result[wxid].decryptKey = this.lockEncrypt(cfg.decryptKey, this.unlockPassword!) as any
+      if (cfg.imageAesKey) result[wxid].imageAesKey = this.lockEncrypt(cfg.imageAesKey, this.unlockPassword!) as any
+      if (cfg.imageXorKey !== undefined) {
+        (result[wxid] as any).imageXorKey = this.lockEncrypt(String(cfg.imageXorKey), this.unlockPassword!)
+      }
+    }
+    return result
+  }
 
-  // === 应用锁验证 ===
+  // === 业务方法 ===
 
-  // 验证应用锁状态，防篡改：
-  // - 所有 auth 字段都是 safeStorage 密文，删除/修改密文 → 解密失败
-  // - 解密失败时，检查 authPassword 密文是否曾经存在（非空非默认值）
-  //   如果存在则说明被篡改，强制锁定
-  verifyAuthEnabled(): boolean {
-    // 用 as any 绕过泛型推断，因为加密后实际存储的是字符串而非 boolean
+  enableLock(password: string): { success: boolean; error?: string } {
+    try {
+      // 先读取当前所有明文密钥
+      const decryptKey = this.get('decryptKey')
+      const imageAesKey = this.get('imageAesKey')
+      const imageXorKey = this.get('imageXorKey')
+      const wxidConfigs = this.get('wxidConfigs')
+
+      // 存储密码 hash（safeStorage 加密）
+      const passwordHash = crypto.createHash('sha256').update(password).digest('hex')
+      this.store.set('authPassword', this.safeEncrypt(passwordHash) as any)
+      this.store.set('authEnabled', this.safeEncrypt('true') as any)
+
+      // 设置运行时状态
+      this.unlockPassword = password
+      this.unlockedKeys.set('decryptKey', decryptKey)
+      this.unlockedKeys.set('imageAesKey', imageAesKey)
+      this.unlockedKeys.set('imageXorKey', imageXorKey)
+
+      // 用密码派生密钥重新加密所有敏感字段
+      if (decryptKey) this.store.set('decryptKey', this.lockEncrypt(String(decryptKey), password) as any)
+      if (imageAesKey) this.store.set('imageAesKey', this.lockEncrypt(String(imageAesKey), password) as any)
+      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.lockEncrypt(String(imageXorKey), password) as any)
+
+      // 处理 wxidConfigs 中的嵌套密钥
+      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
+        const lockedConfigs = this.lockEncryptWxidConfigs(wxidConfigs)
+        this.store.set('wxidConfigs', lockedConfigs)
+        for (const [wxid, cfg] of Object.entries(wxidConfigs)) {
+          if (cfg.decryptKey) this.unlockedKeys.set(`wxid:${wxid}:decryptKey`, cfg.decryptKey)
+          if (cfg.imageAesKey) this.unlockedKeys.set(`wxid:${wxid}:imageAesKey`, cfg.imageAesKey)
+          if (cfg.imageXorKey !== undefined) this.unlockedKeys.set(`wxid:${wxid}:imageXorKey`, cfg.imageXorKey)
+        }
+      }
+
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  }
+
+  unlock(password: string): { success: boolean; error?: string } {
+    try {
+      // 验证密码
+      const storedHash = this.safeDecrypt(this.store.get('authPassword') as any)
+      const inputHash = crypto.createHash('sha256').update(password).digest('hex')
+
+      if (storedHash && storedHash !== inputHash) {
+        // authPassword 存在但密码不匹配
+        return { success: false, error: '密码错误' }
+      }
+
+      if (!storedHash) {
+        // authPassword 被删除/损坏，尝试用密码直接解密 lock: 字段来验证
+        const verified = this.verifyPasswordByDecrypt(password)
+        if (!verified) {
+          return { success: false, error: '密码错误' }
+        }
+        // 密码正确，自愈 authPassword
+        const newHash = crypto.createHash('sha256').update(password).digest('hex')
+        this.store.set('authPassword', this.safeEncrypt(newHash) as any)
+        this.store.set('authEnabled', this.safeEncrypt('true') as any)
+      }
+
+      // 解密所有 lock: 字段到内存缓存
+      const rawDecryptKey: any = this.store.get('decryptKey')
+      if (typeof rawDecryptKey === 'string' && rawDecryptKey.startsWith(LOCK_PREFIX)) {
+        const d = this.lockDecrypt(rawDecryptKey, password)
+        if (d !== null) this.unlockedKeys.set('decryptKey', d)
+      }
+
+      const rawImageAesKey: any = this.store.get('imageAesKey')
+      if (typeof rawImageAesKey === 'string' && rawImageAesKey.startsWith(LOCK_PREFIX)) {
+        const d = this.lockDecrypt(rawImageAesKey, password)
+        if (d !== null) this.unlockedKeys.set('imageAesKey', d)
+      }
+
+      const rawImageXorKey: any = this.store.get('imageXorKey')
+      if (typeof rawImageXorKey === 'string' && rawImageXorKey.startsWith(LOCK_PREFIX)) {
+        const d = this.lockDecrypt(rawImageXorKey, password)
+        if (d !== null) this.unlockedKeys.set('imageXorKey', Number(d))
+      }
+
+      // 解密 wxidConfigs 嵌套密钥
+      this.decryptLockedWxidConfigs(password)
+
+      // 保留密码供 set() 使用
+      this.unlockPassword = password
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  }
+
+  disableLock(password: string): { success: boolean; error?: string } {
+    try {
+      // 验证密码
+      const storedHash = this.safeDecrypt(this.store.get('authPassword') as any)
+      const inputHash = crypto.createHash('sha256').update(password).digest('hex')
+      if (storedHash !== inputHash) {
+        return { success: false, error: '密码错误' }
+      }
+
+      // 先解密所有 lock: 字段
+      if (this.unlockedKeys.size === 0) {
+        this.unlock(password)
+      }
+
+      // 将所有密钥转回 safe: 格式
+      const decryptKey = this.unlockedKeys.get('decryptKey')
+      const imageAesKey = this.unlockedKeys.get('imageAesKey')
+      const imageXorKey = this.unlockedKeys.get('imageXorKey')
+
+      if (decryptKey) this.store.set('decryptKey', this.safeEncrypt(String(decryptKey)) as any)
+      if (imageAesKey) this.store.set('imageAesKey', this.safeEncrypt(String(imageAesKey)) as any)
+      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.safeEncrypt(String(imageXorKey)) as any)
+
+      // 转换 wxidConfigs
+      const wxidConfigs = this.get('wxidConfigs')
+      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
+        const safeConfigs = this.encryptWxidConfigs(wxidConfigs)
+        this.store.set('wxidConfigs', safeConfigs)
+      }
+
+      // 清除 auth 字段
+      this.store.set('authEnabled', false as any)
+      this.store.set('authPassword', '' as any)
+      this.store.set('authUseHello', false as any)
+      this.store.set('authHelloSecret', '' as any)
+
+      // 清除运行时状态
+      this.unlockedKeys.clear()
+      this.unlockPassword = null
+
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  }
+
+  changePassword(oldPassword: string, newPassword: string): { success: boolean; error?: string } {
+    try {
+      // 验证旧密码
+      const storedHash = this.safeDecrypt(this.store.get('authPassword') as any)
+      const oldHash = crypto.createHash('sha256').update(oldPassword).digest('hex')
+      if (storedHash !== oldHash) {
+        return { success: false, error: '旧密码错误' }
+      }
+
+      // 确保已解锁
+      if (this.unlockedKeys.size === 0) {
+        this.unlock(oldPassword)
+      }
+
+      // 用新密码重新加密所有密钥
+      const decryptKey = this.unlockedKeys.get('decryptKey')
+      const imageAesKey = this.unlockedKeys.get('imageAesKey')
+      const imageXorKey = this.unlockedKeys.get('imageXorKey')
+
+      if (decryptKey) this.store.set('decryptKey', this.lockEncrypt(String(decryptKey), newPassword) as any)
+      if (imageAesKey) this.store.set('imageAesKey', this.lockEncrypt(String(imageAesKey), newPassword) as any)
+      if (imageXorKey !== undefined) this.store.set('imageXorKey', this.lockEncrypt(String(imageXorKey), newPassword) as any)
+
+      // 重新加密 wxidConfigs
+      const wxidConfigs = this.get('wxidConfigs')
+      if (wxidConfigs && Object.keys(wxidConfigs).length > 0) {
+        this.unlockPassword = newPassword
+        const lockedConfigs = this.lockEncryptWxidConfigs(wxidConfigs)
+        this.store.set('wxidConfigs', lockedConfigs)
+      }
+
+      // 更新密码 hash
+      const newHash = crypto.createHash('sha256').update(newPassword).digest('hex')
+      this.store.set('authPassword', this.safeEncrypt(newHash) as any)
+
+      // 更新 Hello secret（如果启用了 Hello）
+      const useHello = this.get('authUseHello')
+      if (useHello) {
+        this.store.set('authHelloSecret', this.safeEncrypt(newPassword) as any)
+      }
+
+      this.unlockPassword = newPassword
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  }
+
+  // === Hello 相关 ===
+
+  setHelloSecret(password: string): void {
+    this.store.set('authHelloSecret', this.safeEncrypt(password) as any)
+    this.store.set('authUseHello', this.safeEncrypt('true') as any)
+  }
+
+  getHelloSecret(): string {
+    const raw: any = this.store.get('authHelloSecret')
+    if (!raw || typeof raw !== 'string') return ''
+    return this.safeDecrypt(raw)
+  }
+
+  clearHelloSecret(): void {
+    this.store.set('authHelloSecret', '' as any)
+    this.store.set('authUseHello', this.safeEncrypt('false') as any)
+  }
+
+  // === 迁移 ===
+
+  private migrateAuthFields(): void {
+    // 将旧版明文 auth 字段迁移为 safeStorage 加密格式
+    // 如果已经是 safe: 或 lock: 前缀则跳过
     const rawEnabled: any = this.store.get('authEnabled')
-    const rawPassword: any = this.store.get('authPassword')
-
-    // 情况1：字段是加密密文，正常解密
-    if (typeof rawEnabled === 'string' && rawEnabled.startsWith(SAFE_PREFIX)) {
-      const enabled = this.safeDecrypt(rawEnabled) === 'true'
-      const password = typeof rawPassword === 'string' ? this.safeDecrypt(rawPassword) : ''
-
-      if (!enabled && !password) return false
-      return enabled
-    }
-
-    // 情况2：字段是原始布尔值（旧版本，尚未迁移）
     if (typeof rawEnabled === 'boolean') {
-      return rawEnabled
+      this.store.set('authEnabled', this.safeEncrypt(String(rawEnabled)) as any)
     }
 
-    // 情况3：字段被删除（electron-store 返回默认值 false）或被篡改为无法解密的值
-    // 检查 authPassword 是否有密文残留（说明之前设置过密码）
-    if (typeof rawPassword === 'string' && rawPassword.startsWith(SAFE_PREFIX)) {
-      // 密码密文还在，说明之前启用过应用锁，字段被篡改了 → 强制锁定
+    const rawUseHello: any = this.store.get('authUseHello')
+    if (typeof rawUseHello === 'boolean') {
+      this.store.set('authUseHello', this.safeEncrypt(String(rawUseHello)) as any)
+    }
+
+    const rawPassword: any = this.store.get('authPassword')
+    if (typeof rawPassword === 'string' && rawPassword && !rawPassword.startsWith(SAFE_PREFIX)) {
+      this.store.set('authPassword', this.safeEncrypt(rawPassword) as any)
+    }
+
+    // 迁移敏感密钥字段（明文 → safe:）
+    for (const key of LOCKABLE_STRING_KEYS) {
+      const raw: any = this.store.get(key as any)
+      if (typeof raw === 'string' && raw && !raw.startsWith(SAFE_PREFIX) && !raw.startsWith(LOCK_PREFIX)) {
+        this.store.set(key as any, this.safeEncrypt(raw) as any)
+      }
+    }
+
+    // imageXorKey: 数字 → safe:
+    const rawXor: any = this.store.get('imageXorKey')
+    if (typeof rawXor === 'number' && rawXor !== 0) {
+      this.store.set('imageXorKey', this.safeEncrypt(String(rawXor)) as any)
+    }
+
+    // wxidConfigs 中的嵌套密钥
+    const wxidConfigs: any = this.store.get('wxidConfigs')
+    if (wxidConfigs && typeof wxidConfigs === 'object') {
+      let changed = false
+      for (const [_wxid, cfg] of Object.entries(wxidConfigs) as [string, any][]) {
+        if (cfg.decryptKey && typeof cfg.decryptKey === 'string' && !cfg.decryptKey.startsWith(SAFE_PREFIX) && !cfg.decryptKey.startsWith(LOCK_PREFIX)) {
+          cfg.decryptKey = this.safeEncrypt(cfg.decryptKey)
+          changed = true
+        }
+        if (cfg.imageAesKey && typeof cfg.imageAesKey === 'string' && !cfg.imageAesKey.startsWith(SAFE_PREFIX) && !cfg.imageAesKey.startsWith(LOCK_PREFIX)) {
+          cfg.imageAesKey = this.safeEncrypt(cfg.imageAesKey)
+          changed = true
+        }
+        if (typeof cfg.imageXorKey === 'number' && cfg.imageXorKey !== 0) {
+          cfg.imageXorKey = this.safeEncrypt(String(cfg.imageXorKey))
+          changed = true
+        }
+      }
+      if (changed) {
+        this.store.set('wxidConfigs', wxidConfigs)
+      }
+    }
+  }
+
+  // === 验证 ===
+
+  verifyAuthEnabled(): boolean {
+    // 先检查 authEnabled 字段
+    const rawEnabled: any = this.store.get('authEnabled')
+    if (typeof rawEnabled === 'string' && rawEnabled.startsWith(SAFE_PREFIX)) {
+      if (this.safeDecrypt(rawEnabled) === 'true') return true
+    }
+
+    // 即使 authEnabled 被删除/篡改，如果密钥是 lock: 格式，说明曾开启过应用锁
+    const rawDecryptKey: any = this.store.get('decryptKey')
+    if (typeof rawDecryptKey === 'string' && rawDecryptKey.startsWith(LOCK_PREFIX)) {
       return true
     }
 
     return false
   }
 
-  // === 其他 ===
+  // === 工具方法 ===
 
   getCacheBasePath(): string {
-    const configured = this.get('cachePath')
-    if (configured && configured.trim().length > 0) {
-      return configured
-    }
-    return join(app.getPath('documents'), 'WeFlow')
+    return join(app.getPath('userData'), 'cache')
   }
 
-  getAll(): ConfigSchema {
+  getAll(): Partial<ConfigSchema> {
     return this.store.store
   }
 
   clear(): void {
     this.store.clear()
+    this.unlockedKeys.clear()
+    this.unlockPassword = null
   }
 }
