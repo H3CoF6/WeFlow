@@ -24,7 +24,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 认证
   auth: {
-    hello: (message?: string) => ipcRenderer.invoke('auth:hello', message)
+    hello: (message?: string) => ipcRenderer.invoke('auth:hello', message),
+    verifyEnabled: () => ipcRenderer.invoke('auth:verifyEnabled')
   },
 
 

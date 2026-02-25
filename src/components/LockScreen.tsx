@@ -105,9 +105,19 @@ export default function LockScreen({ onUnlock, avatar, useHello = false }: LockS
 
         try {
             const storedHash = await configService.getAuthPassword()
+
+            // 兜底：如果没有设置过密码，直接放行并关闭应用锁
+            if (!storedHash) {
+                await configService.setAuthEnabled(false)
+                handleUnlock()
+                return
+            }
+
             const inputHash = await sha256(password)
 
             if (inputHash === storedHash) {
+                // 解锁成功，重新写入 authEnabled 以修复可能被篡改的签名
+                await configService.setAuthEnabled(true)
                 handleUnlock()
             } else {
                 setError('密码错误')

@@ -19,6 +19,10 @@ export interface ElectronAPI {
     set: (key: string, value: unknown) => Promise<void>
     clear: () => Promise<boolean>
   }
+  auth: {
+    hello: (message?: string) => Promise<{ success: boolean; error?: string }>
+    verifyEnabled: () => Promise<boolean>
+  }
   dialog: {
     openFile: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>
     openDirectory: (options?: Electron.OpenDialogOptions) => Promise<Electron.OpenDialogReturnValue>

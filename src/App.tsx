@@ -312,7 +312,7 @@ function App() {
     const checkLock = async () => {
       // 并行获取配置，减少等待
       const [enabled, useHello] = await Promise.all([
-        configService.getAuthEnabled(),
+        window.electronAPI.auth.verifyEnabled(),
         configService.getAuthUseHello()
       ])
 

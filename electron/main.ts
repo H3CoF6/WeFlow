@@ -1034,6 +1034,11 @@ function registerIpcHandlers() {
     return windowsHelloService.verify(message, targetWin)
   })
 
+  // 验证应用锁状态（带签名校验，防篡改）
+  ipcMain.handle('auth:verifyEnabled', async () => {
+    return configService?.verifyAuthEnabled() ?? false
+  })
+
   // 导出相关
   ipcMain.handle('export:getExportStats', async (_, sessionIds: string[], options: any) => {
     return exportService.getExportStats(sessionIds, options)

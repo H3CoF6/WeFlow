@@ -279,7 +279,7 @@ function SettingsPage() {
       const savedNotificationFilterMode = await configService.getNotificationFilterMode()
       const savedNotificationFilterList = await configService.getNotificationFilterList()
 
-      const savedAuthEnabled = await configService.getAuthEnabled()
+      const savedAuthEnabled = await window.electronAPI.auth.verifyEnabled()
       const savedAuthUseHello = await configService.getAuthUseHello()
       setAuthEnabled(savedAuthEnabled)
       setAuthUseHello(savedAuthUseHello)
@@ -2046,6 +2046,14 @@ function SettingsPage() {
               checked={authEnabled}
               onChange={async (e) => {
                 const enabled = e.target.checked
+                if (enabled) {
+                  // 检查是否已设置密码，未设置则阻止开启
+                  const storedHash = await configService.getAuthPassword()
+                  if (!storedHash) {
+                    showMessage('请先设置密码再启用应用锁', false)
+                    return
+                  }
+                }
                 setAuthEnabled(enabled)
                 await configService.setAuthEnabled(enabled)
               }}
