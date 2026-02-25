@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { useChatStore } from '../stores/chatStore'
 import { useBatchTranscribeStore } from '../stores/batchTranscribeStore'
+import { useBatchImageDecryptStore } from '../stores/batchImageDecryptStore'
 import type { ChatSession, Message } from '../types/models'
 import { getEmojiPath } from 'wechat-emojis'
 import { VoiceTranscribeDialog } from '../components/VoiceTranscribeDialog'
@@ -25,6 +26,12 @@ interface XmlField {
   type: 'attr' | 'node';
   tagName?: string;
   path: string;
+}
+
+interface BatchImageDecryptCandidate {
+  imageMd5?: string
+  imageDatName?: string
+  createTime?: number
 }
 
 // 尝试解析 XML 为可编辑字段
@@ -301,11 +308,16 @@ function ChatPage(_props: ChatPageProps) {
 
   // 批量语音转文字相关状态（进度/结果 由全局 store 管理）
   const { isBatchTranscribing, progress: batchTranscribeProgress, showToast: showBatchProgress, startTranscribe, updateProgress, finishTranscribe, setShowToast: setShowBatchProgress } = useBatchTranscribeStore()
+  const { isBatchDecrypting, progress: batchDecryptProgress, startDecrypt, updateProgress: updateDecryptProgress, finishDecrypt, setShowToast: setShowBatchDecryptToast } = useBatchImageDecryptStore()
   const [showBatchConfirm, setShowBatchConfirm] = useState(false)
   const [batchVoiceCount, setBatchVoiceCount] = useState(0)
   const [batchVoiceMessages, setBatchVoiceMessages] = useState<Message[] | null>(null)
   const [batchVoiceDates, setBatchVoiceDates] = useState<string[]>([])
   const [batchSelectedDates, setBatchSelectedDates] = useState<Set<string>>(new Set())
+  const [showBatchDecryptConfirm, setShowBatchDecryptConfirm] = useState(false)
+  const [batchImageMessages, setBatchImageMessages] = useState<BatchImageDecryptCandidate[] | null>(null)
+  const [batchImageDates, setBatchImageDates] = useState<string[]>([])
+  const [batchImageSelectedDates, setBatchImageSelectedDates] = useState<Set<string>>(new Set())
 
   // 批量删除相关状态
   const [isDeleting, setIsDeleting] = useState(false)
@@ -1434,6 +1446,37 @@ function ChatPage(_props: ChatPageProps) {
     setShowBatchConfirm(true)
   }, [sessions, currentSessionId, isBatchTranscribing])
 
+  const handleBatchDecrypt = useCallback(async () => {
+    if (!currentSessionId || isBatchDecrypting) return
+    const session = sessions.find(s => s.username === currentSessionId)
+    if (!session) {
+      alert('未找到当前会话')
+      return
+    }
+
+    const result = await window.electronAPI.chat.getAllImageMessages(currentSessionId)
+    if (!result.success || !result.images) {
+      alert(`获取图片消息失败: ${result.error || '未知错误'}`)
+      return
+    }
+
+    if (result.images.length === 0) {
+      alert('当前会话没有图片消息')
+      return
+    }
+
+    const dateSet = new Set<string>()
+    result.images.forEach((img: BatchImageDecryptCandidate) => {
+      if (img.createTime) dateSet.add(new Date(img.createTime * 1000).toISOString().slice(0, 10))
+    })
+    const sortedDates = Array.from(dateSet).sort((a, b) => b.localeCompare(a))
+
+    setBatchImageMessages(result.images)
+    setBatchImageDates(sortedDates)
+    setBatchImageSelectedDates(new Set(sortedDates))
+    setShowBatchDecryptConfirm(true)
+  }, [currentSessionId, isBatchDecrypting, sessions])
+
   const handleExportCurrentSession = useCallback(() => {
     if (!currentSessionId) return
     navigate('/export', {
@@ -1556,6 +1599,88 @@ function ChatPage(_props: ChatPageProps) {
   }, [])
   const selectAllBatchDates = useCallback(() => setBatchSelectedDates(new Set(batchVoiceDates)), [batchVoiceDates])
   const clearAllBatchDates = useCallback(() => setBatchSelectedDates(new Set()), [])
+
+  const confirmBatchDecrypt = useCallback(async () => {
+    if (!currentSessionId) return
+
+    const selected = batchImageSelectedDates
+    if (selected.size === 0) {
+      alert('请至少选择一个日期')
+      return
+    }
+
+    const images = (batchImageMessages || []).filter(img =>
+      img.createTime && selected.has(new Date(img.createTime * 1000).toISOString().slice(0, 10))
+    )
+    if (images.length === 0) {
+      alert('所选日期下没有图片消息')
+      return
+    }
+
+    const session = sessions.find(s => s.username === currentSessionId)
+    if (!session) return
+
+    setShowBatchDecryptConfirm(false)
+    setBatchImageMessages(null)
+    setBatchImageDates([])
+    setBatchImageSelectedDates(new Set())
+
+    startDecrypt(images.length, session.displayName || session.username)
+
+    let successCount = 0
+    let failCount = 0
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i]
+      try {
+        const r = await window.electronAPI.image.decrypt({
+          sessionId: session.username,
+          imageMd5: img.imageMd5,
+          imageDatName: img.imageDatName,
+          force: false
+        })
+        if (r?.success) successCount++
+        else failCount++
+      } catch {
+        failCount++
+      }
+
+      updateDecryptProgress(i + 1, images.length)
+      if (i % 5 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+    }
+
+    finishDecrypt(successCount, failCount)
+  }, [batchImageMessages, batchImageSelectedDates, currentSessionId, finishDecrypt, sessions, startDecrypt, updateDecryptProgress])
+
+  const batchImageCountByDate = useMemo(() => {
+    const map = new Map<string, number>()
+    if (!batchImageMessages) return map
+    batchImageMessages.forEach(img => {
+      if (!img.createTime) return
+      const d = new Date(img.createTime * 1000).toISOString().slice(0, 10)
+      map.set(d, (map.get(d) ?? 0) + 1)
+    })
+    return map
+  }, [batchImageMessages])
+
+  const batchImageSelectedCount = useMemo(() => {
+    if (!batchImageMessages) return 0
+    return batchImageMessages.filter(img =>
+      img.createTime && batchImageSelectedDates.has(new Date(img.createTime * 1000).toISOString().slice(0, 10))
+    ).length
+  }, [batchImageMessages, batchImageSelectedDates])
+
+  const toggleBatchImageDate = useCallback((date: string) => {
+    setBatchImageSelectedDates(prev => {
+      const next = new Set(prev)
+      if (next.has(date)) next.delete(date)
+      else next.add(date)
+      return next
+    })
+  }, [])
+  const selectAllBatchImageDates = useCallback(() => setBatchImageSelectedDates(new Set(batchImageDates)), [batchImageDates])
+  const clearAllBatchImageDates = useCallback(() => setBatchImageSelectedDates(new Set()), [])
 
   const lastSelectedIdRef = useRef<number | null>(null)
 
@@ -1997,6 +2122,26 @@ function ChatPage(_props: ChatPageProps) {
                   )}
                 </button>
                 <button
+                  className={`icon-btn batch-decrypt-btn${isBatchDecrypting ? ' transcribing' : ''}`}
+                  onClick={() => {
+                    if (isBatchDecrypting) {
+                      setShowBatchDecryptToast(true)
+                    } else {
+                      handleBatchDecrypt()
+                    }
+                  }}
+                  disabled={!currentSessionId}
+                  title={isBatchDecrypting
+                    ? `批量解密中 (${batchDecryptProgress.current}/${batchDecryptProgress.total})，点击查看进度`
+                    : '批量解密图片'}
+                >
+                  {isBatchDecrypting ? (
+                    <Loader2 size={18} className="spin" />
+                  ) : (
+                    <ImageIcon size={18} />
+                  )}
+                </button>
+                <button
                   className="icon-btn jump-to-time-btn"
                   onClick={async () => {
                     setShowJumpDialog(true)
@@ -2361,6 +2506,66 @@ function ChatPage(_props: ChatPageProps) {
         document.body
       )}
       {/* 消息右键菜单 */}
+      {showBatchDecryptConfirm && createPortal(
+        <div className="batch-modal-overlay" onClick={() => setShowBatchDecryptConfirm(false)}>
+          <div className="batch-modal-content batch-confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="batch-modal-header">
+              <ImageIcon size={20} />
+              <h3>批量解密图片</h3>
+            </div>
+            <div className="batch-modal-body">
+              <p>选择要解密的日期（仅显示有图片的日期），然后开始解密。</p>
+              {batchImageDates.length > 0 && (
+                <div className="batch-dates-list-wrap">
+                  <div className="batch-dates-actions">
+                    <button type="button" className="batch-dates-btn" onClick={selectAllBatchImageDates}>全选</button>
+                    <button type="button" className="batch-dates-btn" onClick={clearAllBatchImageDates}>取消全选</button>
+                  </div>
+                  <ul className="batch-dates-list">
+                    {batchImageDates.map(dateStr => {
+                      const count = batchImageCountByDate.get(dateStr) ?? 0
+                      const checked = batchImageSelectedDates.has(dateStr)
+                      return (
+                        <li key={dateStr}>
+                          <label className="batch-date-row">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleBatchImageDate(dateStr)}
+                            />
+                            <span className="batch-date-label">{formatBatchDateLabel(dateStr)}</span>
+                            <span className="batch-date-count">{count} 张图片</span>
+                          </label>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+              <div className="batch-info">
+                <div className="info-item">
+                  <span className="label">已选:</span>
+                  <span className="value">{batchImageSelectedDates.size} 天，共 {batchImageSelectedCount} 张图片</span>
+                </div>
+              </div>
+              <div className="batch-warning">
+                <AlertCircle size={16} />
+                <span>批量解密可能需要较长时间，进行中会在右下角显示非阻塞进度浮层。</span>
+              </div>
+            </div>
+            <div className="batch-modal-footer">
+              <button className="btn-secondary" onClick={() => setShowBatchDecryptConfirm(false)}>
+                取消
+              </button>
+              <button className="btn-primary" onClick={confirmBatchDecrypt}>
+                <ImageIcon size={16} />
+                开始解密
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
       {contextMenu && createPortal(
         <>
           <div className="context-menu-overlay" onClick={() => setContextMenu(null)}

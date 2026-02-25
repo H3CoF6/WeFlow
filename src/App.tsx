@@ -34,6 +34,7 @@ import UpdateProgressCapsule from './components/UpdateProgressCapsule'
 import LockScreen from './components/LockScreen'
 import { GlobalSessionMonitor } from './components/GlobalSessionMonitor'
 import { BatchTranscribeGlobal } from './components/BatchTranscribeGlobal'
+import { BatchImageDecryptGlobal } from './components/BatchImageDecryptGlobal'
 
 function App() {
   const navigate = useNavigate()
@@ -385,6 +386,7 @@ function App() {
 
       {/* 全局批量转写进度浮窗 */}
       <BatchTranscribeGlobal />
+      <BatchImageDecryptGlobal />
 
       {/* 用户协议弹窗 */}
       {showAgreement && !agreementLoading && (

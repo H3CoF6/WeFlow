@@ -1,4 +1,4 @@
-import { join, dirname, basename, extname } from 'path'
+﻿import { join, dirname, basename, extname } from 'path'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, copyFileSync, unlinkSync, watch } from 'fs'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -73,6 +73,17 @@ export interface Message {
   fileSize?: number         // 文件大小
   fileExt?: string          // 文件扩展名
   xmlType?: string          // XML 中的 type 字段
+  appMsgKind?: string       // 归一化 appmsg 类型
+  appMsgDesc?: string
+  appMsgAppName?: string
+  appMsgSourceName?: string
+  appMsgSourceUsername?: string
+  appMsgThumbUrl?: string
+  appMsgMusicUrl?: string
+  appMsgDataUrl?: string
+  appMsgLocationLabel?: string
+  finderNickname?: string
+  finderUsername?: string
   // 名片消息
   cardUsername?: string     // 名片的微信ID
   cardNickname?: string     // 名片的昵称
@@ -1224,6 +1235,17 @@ class ChatService {
       let fileSize: number | undefined
       let fileExt: string | undefined
       let xmlType: string | undefined
+      let appMsgKind: string | undefined
+      let appMsgDesc: string | undefined
+      let appMsgAppName: string | undefined
+      let appMsgSourceName: string | undefined
+      let appMsgSourceUsername: string | undefined
+      let appMsgThumbUrl: string | undefined
+      let appMsgMusicUrl: string | undefined
+      let appMsgDataUrl: string | undefined
+      let appMsgLocationLabel: string | undefined
+      let finderNickname: string | undefined
+      let finderUsername: string | undefined
       // 名片消息
       let cardUsername: string | undefined
       let cardNickname: string | undefined
@@ -1284,6 +1306,33 @@ class ChatService {
         quotedSender = quoteInfo.sender
       }
 
+      const looksLikeAppMsg = Boolean(content && (content.includes('<appmsg') || content.includes('&lt;appmsg')))
+      if (looksLikeAppMsg) {
+        const type49Info = this.parseType49Message(content)
+        xmlType = xmlType || type49Info.xmlType
+        linkTitle = linkTitle || type49Info.linkTitle
+        linkUrl = linkUrl || type49Info.linkUrl
+        linkThumb = linkThumb || type49Info.linkThumb
+        fileName = fileName || type49Info.fileName
+        fileSize = fileSize ?? type49Info.fileSize
+        fileExt = fileExt || type49Info.fileExt
+        appMsgKind = appMsgKind || type49Info.appMsgKind
+        appMsgDesc = appMsgDesc || type49Info.appMsgDesc
+        appMsgAppName = appMsgAppName || type49Info.appMsgAppName
+        appMsgSourceName = appMsgSourceName || type49Info.appMsgSourceName
+        appMsgSourceUsername = appMsgSourceUsername || type49Info.appMsgSourceUsername
+        appMsgThumbUrl = appMsgThumbUrl || type49Info.appMsgThumbUrl
+        appMsgMusicUrl = appMsgMusicUrl || type49Info.appMsgMusicUrl
+        appMsgDataUrl = appMsgDataUrl || type49Info.appMsgDataUrl
+        appMsgLocationLabel = appMsgLocationLabel || type49Info.appMsgLocationLabel
+        finderNickname = finderNickname || type49Info.finderNickname
+        finderUsername = finderUsername || type49Info.finderUsername
+        chatRecordTitle = chatRecordTitle || type49Info.chatRecordTitle
+        chatRecordList = chatRecordList || type49Info.chatRecordList
+        transferPayerUsername = transferPayerUsername || type49Info.transferPayerUsername
+        transferReceiverUsername = transferReceiverUsername || type49Info.transferReceiverUsername
+      }
+
       messages.push({
         localId: this.getRowInt(row, ['local_id', 'localId', 'LocalId', 'msg_local_id', 'msgLocalId', 'MsgLocalId', 'msg_id', 'msgId', 'MsgId', 'id', 'WCDB_CT_local_id'], 0),
         serverId: this.getRowInt(row, ['server_id', 'serverId', 'ServerId', 'msg_server_id', 'msgServerId', 'MsgServerId', 'WCDB_CT_server_id'], 0),
@@ -1312,6 +1361,17 @@ class ChatService {
         fileSize,
         fileExt,
         xmlType,
+        appMsgKind,
+        appMsgDesc,
+        appMsgAppName,
+        appMsgSourceName,
+        appMsgSourceUsername,
+        appMsgThumbUrl,
+        appMsgMusicUrl,
+        appMsgDataUrl,
+        appMsgLocationLabel,
+        finderNickname,
+        finderUsername,
         cardUsername,
         cardNickname,
         transferPayerUsername,
@@ -1350,6 +1410,7 @@ class ChatService {
 
     // 检查 XML type，用于识别引用消息等
     const xmlType = this.extractXmlValue(content, 'type')
+    const looksLikeAppMsg = content.includes('<appmsg') || content.includes('&lt;appmsg')
 
     switch (localType) {
       case 1:
@@ -1364,8 +1425,14 @@ class ChatService {
         return '[视频]'
       case 47:
         return '[动画表情]'
-      case 48:
-        return '[位置]'
+      case 48: {
+        const label =
+          this.extractXmlAttribute(content, 'location', 'label') ||
+          this.extractXmlAttribute(content, 'location', 'poiname') ||
+          this.extractXmlValue(content, 'label') ||
+          this.extractXmlValue(content, 'poiname')
+        return label ? `[位置] ${label}` : '[位置]'
+      }
       case 49:
         return this.parseType49(content)
       case 50:
@@ -1400,6 +1467,10 @@ class ChatService {
           return title || '[引用消息]'
         }
 
+        if (looksLikeAppMsg) {
+          return this.parseType49(content)
+        }
+
         // 尝试从 XML 提取通用 title
         const genericTitle = this.extractXmlValue(content, 'title')
         if (genericTitle && genericTitle.length > 0 && genericTitle.length < 100) {
@@ -1416,6 +1487,23 @@ class ChatService {
   private parseType49(content: string): string {
     const title = this.extractXmlValue(content, 'title')
     const type = this.extractXmlValue(content, 'type')
+    const normalized = content.toLowerCase()
+    const locationLabel =
+      this.extractXmlAttribute(content, 'location', 'label') ||
+      this.extractXmlAttribute(content, 'location', 'poiname') ||
+      this.extractXmlValue(content, 'label') ||
+      this.extractXmlValue(content, 'poiname')
+    const isFinder =
+      type === '51' ||
+      normalized.includes('<finder') ||
+      normalized.includes('finderusername') ||
+      normalized.includes('finderobjectid')
+    const isRedPacket = type === '2001' || normalized.includes('hongbao')
+    const isMusic =
+      type === '3' ||
+      normalized.includes('<musicurl>') ||
+      normalized.includes('<playurl>') ||
+      normalized.includes('<dataurl>')
 
     // 群公告消息（type 87）特殊处理
     if (type === '87') {
@@ -1424,6 +1512,19 @@ class ChatService {
         return `[群公告] ${textAnnouncement}`
       }
       return '[群公告]'
+    }
+
+    if (isFinder) {
+      return title ? `[视频号] ${title}` : '[视频号]'
+    }
+    if (isRedPacket) {
+      return title ? `[红包] ${title}` : '[红包]'
+    }
+    if (locationLabel) {
+      return `[位置] ${locationLabel}`
+    }
+    if (isMusic) {
+      return title ? `[音乐] ${title}` : '[音乐]'
     }
 
     if (title) {
@@ -1443,6 +1544,8 @@ class ChatService {
           return title
         case '2000':
           return `[转账] ${title}`
+        case '2001':
+          return `[红包] ${title}`
         default:
           return title
       }
@@ -1459,6 +1562,13 @@ class ChatService {
         return '[小程序]'
       case '2000':
         return '[转账]'
+      case '2001':
+        return '[红包]'
+      case '3':
+        return '[音乐]'
+      case '5':
+      case '49':
+        return '[链接]'
       case '87':
         return '[群公告]'
       default:
@@ -1790,6 +1900,17 @@ class ChatService {
     linkTitle?: string
     linkUrl?: string
     linkThumb?: string
+    appMsgKind?: string
+    appMsgDesc?: string
+    appMsgAppName?: string
+    appMsgSourceName?: string
+    appMsgSourceUsername?: string
+    appMsgThumbUrl?: string
+    appMsgMusicUrl?: string
+    appMsgDataUrl?: string
+    appMsgLocationLabel?: string
+    finderNickname?: string
+    finderUsername?: string
     fileName?: string
     fileSize?: number
     fileExt?: string
@@ -1816,6 +1937,82 @@ class ChatService {
       // 提取通用字段
       const title = this.extractXmlValue(content, 'title')
       const url = this.extractXmlValue(content, 'url')
+      const desc = this.extractXmlValue(content, 'des') || this.extractXmlValue(content, 'description')
+      const appName = this.extractXmlValue(content, 'appname')
+      const sourceName = this.extractXmlValue(content, 'sourcename')
+      const sourceUsername = this.extractXmlValue(content, 'sourceusername')
+      const thumbUrl =
+        this.extractXmlValue(content, 'thumburl') ||
+        this.extractXmlValue(content, 'cdnthumburl') ||
+        this.extractXmlValue(content, 'cover') ||
+        this.extractXmlValue(content, 'coverurl') ||
+        this.extractXmlValue(content, 'thumb_url')
+      const musicUrl =
+        this.extractXmlValue(content, 'musicurl') ||
+        this.extractXmlValue(content, 'playurl') ||
+        this.extractXmlValue(content, 'songalbumurl')
+      const dataUrl = this.extractXmlValue(content, 'dataurl') || this.extractXmlValue(content, 'lowurl')
+      const locationLabel =
+        this.extractXmlAttribute(content, 'location', 'label') ||
+        this.extractXmlAttribute(content, 'location', 'poiname') ||
+        this.extractXmlValue(content, 'label') ||
+        this.extractXmlValue(content, 'poiname')
+      const finderUsername =
+        this.extractXmlValue(content, 'finderusername') ||
+        this.extractXmlValue(content, 'finder_username') ||
+        this.extractXmlValue(content, 'finderuser')
+      const finderNickname =
+        this.extractXmlValue(content, 'findernickname') ||
+        this.extractXmlValue(content, 'finder_nickname')
+      const normalized = content.toLowerCase()
+      const isFinder =
+        xmlType === '51' ||
+        normalized.includes('<finder') ||
+        normalized.includes('finderusername') ||
+        normalized.includes('finderobjectid')
+      const isRedPacket = xmlType === '2001' || normalized.includes('hongbao')
+      const isMusic = xmlType === '3' || Boolean(musicUrl || dataUrl)
+      const isLocation = Boolean(locationLabel) || normalized.includes('<location')
+
+      result.linkTitle = title || undefined
+      result.linkUrl = url || undefined
+      result.linkThumb = thumbUrl || undefined
+      result.appMsgDesc = desc || undefined
+      result.appMsgAppName = appName || undefined
+      result.appMsgSourceName = sourceName || undefined
+      result.appMsgSourceUsername = sourceUsername || undefined
+      result.appMsgThumbUrl = thumbUrl || undefined
+      result.appMsgMusicUrl = musicUrl || undefined
+      result.appMsgDataUrl = dataUrl || undefined
+      result.appMsgLocationLabel = locationLabel || undefined
+      result.finderUsername = finderUsername || undefined
+      result.finderNickname = finderNickname || undefined
+
+      if (isFinder) {
+        result.appMsgKind = 'finder'
+      } else if (isRedPacket) {
+        result.appMsgKind = 'red-packet'
+      } else if (isLocation) {
+        result.appMsgKind = 'location'
+      } else if (isMusic) {
+        result.appMsgKind = 'music'
+      } else if (xmlType === '33' || xmlType === '36') {
+        result.appMsgKind = 'miniapp'
+      } else if (xmlType === '6') {
+        result.appMsgKind = 'file'
+      } else if (xmlType === '19') {
+        result.appMsgKind = 'chat-record'
+      } else if (xmlType === '2000') {
+        result.appMsgKind = 'transfer'
+      } else if (xmlType === '87') {
+        result.appMsgKind = 'announcement'
+      } else if ((xmlType === '5' || xmlType === '49') && (sourceUsername?.startsWith('gh_') || appName?.includes('公众号') || sourceName)) {
+        result.appMsgKind = 'official-link'
+      } else if (url) {
+        result.appMsgKind = 'link'
+      } else {
+        result.appMsgKind = 'card'
+      }
 
       switch (xmlType) {
         case '6': {
@@ -3884,6 +4081,74 @@ class ChatService {
    * 获取某会话中有消息的日期列表
    * 返回 YYYY-MM-DD 格式的日期字符串数组
    */
+  /**
+   * 获取某会话的全部图片消息（用于聊天页批量图片解密）
+   */
+  async getAllImageMessages(
+    sessionId: string
+  ): Promise<{ success: boolean; images?: { imageMd5?: string; imageDatName?: string; createTime?: number }[]; error?: string }> {
+    try {
+      const connectResult = await this.ensureConnected()
+      if (!connectResult.success) {
+        return { success: false, error: connectResult.error || '数据库未连接' }
+      }
+
+      let tables = this.sessionTablesCache.get(sessionId)
+      if (!tables) {
+        const tableStats = await wcdbService.getMessageTableStats(sessionId)
+        if (!tableStats.success || !tableStats.tables || tableStats.tables.length === 0) {
+          return { success: false, error: '未找到会话消息表' }
+        }
+        tables = tableStats.tables
+          .map(t => ({ tableName: t.table_name || t.name, dbPath: t.db_path }))
+          .filter(t => t.tableName && t.dbPath) as Array<{ tableName: string; dbPath: string }>
+        if (tables.length > 0) {
+          this.sessionTablesCache.set(sessionId, tables)
+          setTimeout(() => { this.sessionTablesCache.delete(sessionId) }, this.sessionTablesCacheTtl)
+        }
+      }
+
+      let allImages: Array<{ imageMd5?: string; imageDatName?: string; createTime?: number }> = []
+
+      for (const { tableName, dbPath } of tables) {
+        try {
+          const sql = `SELECT * FROM ${tableName} WHERE local_type = 3 ORDER BY create_time DESC`
+          const result = await wcdbService.execQuery('message', dbPath, sql)
+          if (result.success && result.rows && result.rows.length > 0) {
+            const mapped = this.mapRowsToMessages(result.rows as Record<string, any>[])
+            const images = mapped
+              .filter(msg => msg.localType === 3)
+              .map(msg => ({
+                imageMd5: msg.imageMd5 || undefined,
+                imageDatName: msg.imageDatName || undefined,
+                createTime: msg.createTime || undefined
+              }))
+              .filter(img => Boolean(img.imageMd5 || img.imageDatName))
+            allImages.push(...images)
+          }
+        } catch (e) {
+          console.error(`[ChatService] 查询图片消息失败 (${dbPath}):`, e)
+        }
+      }
+
+      allImages.sort((a, b) => (b.createTime || 0) - (a.createTime || 0))
+
+      const seen = new Set<string>()
+      allImages = allImages.filter(img => {
+        const key = img.imageMd5 || img.imageDatName || ''
+        if (!key || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+
+      console.log(`[ChatService] 共找到 ${allImages.length} 条图片消息（去重后）`)
+      return { success: true, images: allImages }
+    } catch (e) {
+      console.error('[ChatService] 获取全部图片消息失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
   async getMessageDates(sessionId: string): Promise<{ success: boolean; dates?: string[]; error?: string }> {
     try {
       const connectResult = await this.ensureConnected()
@@ -4017,6 +4282,14 @@ class ChatService {
       msg.emojiThumbUrl = emojiInfo.thumbUrl
       msg.emojiEncryptUrl = emojiInfo.encryptUrl
       msg.emojiAesKey = emojiInfo.aesKey
+    } else if (msg.localType === 42) {
+      const cardInfo = this.parseCardInfo(rawContent)
+      msg.cardUsername = cardInfo.username
+      msg.cardNickname = cardInfo.nickname
+    }
+
+    if (rawContent && (rawContent.includes('<appmsg') || rawContent.includes('&lt;appmsg'))) {
+      Object.assign(msg, this.parseType49Message(rawContent))
     }
 
     return msg
