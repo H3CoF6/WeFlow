@@ -1114,6 +1114,53 @@
       }
     }
   }
+
+  .appmsg-meta-badge {
+    font-size: 11px;
+    line-height: 1;
+    color: var(--primary);
+    background: rgba(127, 127, 127, 0.08);
+    border: 1px solid rgba(127, 127, 127, 0.18);
+    border-radius: 999px;
+    padding: 3px 7px;
+    align-self: flex-start;
+    white-space: nowrap;
+  }
+
+  .link-desc-block {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .appmsg-url-line {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &.appmsg-rich-card {
+    .link-header {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+}
+
+.link-thumb.theme-adaptive,
+.miniapp-thumb.theme-adaptive {
+  transition: filter 0.2s ease;
+}
+
+[data-mode="dark"] {
+  .link-thumb.theme-adaptive,
+  .miniapp-thumb.theme-adaptive {
+    filter: invert(1) hue-rotate(180deg);
+  }
 }
 
 // 适配发送出去的消息中的链接卡片
@@ -2752,12 +2799,14 @@
 
   .card-message,
   .chat-record-message,
-  .miniapp-message {
+  .miniapp-message,
+  .appmsg-rich-card {
     background: rgba(255, 255, 255, 0.15);
 
     .card-name,
     .miniapp-title,
-    .source-name {
+    .source-name,
+    .link-title {
       color: white;
     }
 
@@ -2765,7 +2814,9 @@
     .miniapp-label,
     .chat-record-item,
     .chat-record-meta-line,
-    .chat-record-desc {
+    .chat-record-desc,
+    .link-desc,
+    .appmsg-url-line {
       color: rgba(255, 255, 255, 0.8);
     }
 
@@ -2777,6 +2828,12 @@
 
     .chat-record-more {
       color: rgba(255, 255, 255, 0.9);
+    }
+
+    .appmsg-meta-badge {
+      color: rgba(255, 255, 255, 0.92);
+      background: rgba(255, 255, 255, 0.12);
+      border-color: rgba(255, 255, 255, 0.2);
     }
   }
 
@@ -3234,5 +3291,17 @@
         box-shadow: 0 4px 12px var(--primary-light);
       }
     }
+  }
+}
+
+.miniapp-message-rich {
+  .miniapp-thumb {
+    width: 42px;
+    height: 42px;
+    border-radius: 8px;
+    object-fit: cover;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    flex-shrink: 0;
   }
 }

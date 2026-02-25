@@ -3061,7 +3061,7 @@ function MessageBubble({
           setImageLocalPath(result.localPath)
           setImageHasUpdate(false)
           if (result.liveVideoPath) setImageLiveVideoPath(result.liveVideoPath)
-          return
+          return result
         }
       }
 
@@ -3072,7 +3072,7 @@ function MessageBubble({
         imageDataUrlCache.set(imageCacheKey, dataUrl)
         setImageLocalPath(dataUrl)
         setImageHasUpdate(false)
-        return
+        return { success: true, localPath: dataUrl } as any
       }
       if (!silent) setImageError(true)
     } catch {
@@ -3080,6 +3080,7 @@ function MessageBubble({
     } finally {
       if (!silent) setImageLoading(false)
     }
+    return { success: false } as any
   }, [isImage, imageLoading, message.imageMd5, message.imageDatName, message.localId, session.username, imageCacheKey, detectImageMimeFromBase64])
 
   const triggerForceHd = useCallback(() => {
@@ -3109,6 +3110,55 @@ function MessageBubble({
     })
     void requestImageDecrypt()
   }, [message.imageDatName, message.imageMd5, message.localId, requestImageDecrypt, session.username])
+
+  const handleOpenImageViewer = useCallback(async () => {
+    if (!imageLocalPath) return
+
+    let finalImagePath = imageLocalPath
+    let finalLiveVideoPath = imageLiveVideoPath || undefined
+
+    // If current cache is a thumbnail, wait for a silent force-HD decrypt before opening viewer.
+    if (imageHasUpdate) {
+      try {
+        const upgraded = await requestImageDecrypt(true, true)
+        if (upgraded?.success && upgraded.localPath) {
+          finalImagePath = upgraded.localPath
+          finalLiveVideoPath = upgraded.liveVideoPath || finalLiveVideoPath
+        }
+      } catch { }
+    }
+
+    // One more resolve helps when background/batch decrypt has produced a clearer image or live video
+    // but local component state hasn't caught up yet.
+    if (message.imageMd5 || message.imageDatName) {
+      try {
+        const resolved = await window.electronAPI.image.resolveCache({
+          sessionId: session.username,
+          imageMd5: message.imageMd5 || undefined,
+          imageDatName: message.imageDatName
+        })
+        if (resolved?.success && resolved.localPath) {
+          finalImagePath = resolved.localPath
+          finalLiveVideoPath = resolved.liveVideoPath || finalLiveVideoPath
+          imageDataUrlCache.set(imageCacheKey, resolved.localPath)
+          setImageLocalPath(resolved.localPath)
+          if (resolved.liveVideoPath) setImageLiveVideoPath(resolved.liveVideoPath)
+          setImageHasUpdate(Boolean(resolved.hasUpdate))
+        }
+      } catch { }
+    }
+
+    void window.electronAPI.window.openImageViewerWindow(finalImagePath, finalLiveVideoPath)
+  }, [
+    imageHasUpdate,
+    imageLiveVideoPath,
+    imageLocalPath,
+    imageCacheKey,
+    message.imageDatName,
+    message.imageMd5,
+    requestImageDecrypt,
+    session.username
+  ])
 
   useEffect(() => {
     return () => {
@@ -3631,10 +3681,7 @@ function MessageBubble({
                   src={imageLocalPath}
                   alt="图片"
                   className="image-message"
-                  onClick={() => {
-                    if (imageHasUpdate) void requestImageDecrypt(true, true)
-                    void window.electronAPI.window.openImageViewerWindow(imageLocalPath!, imageLiveVideoPath || undefined)
-                  }}
+                  onClick={() => { void handleOpenImageViewer() }}
                   onLoad={() => setImageError(false)}
                   onError={() => setImageError(true)}
                 />

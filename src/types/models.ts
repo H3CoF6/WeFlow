@@ -64,6 +64,17 @@ export interface Message {
   fileSize?: number         // 文件大小
   fileExt?: string          // 文件扩展名
   xmlType?: string          // XML 中的 type 字段
+  appMsgKind?: string       // 归一化 appmsg 类型
+  appMsgDesc?: string
+  appMsgAppName?: string
+  appMsgSourceName?: string
+  appMsgSourceUsername?: string
+  appMsgThumbUrl?: string
+  appMsgMusicUrl?: string
+  appMsgDataUrl?: string
+  appMsgLocationLabel?: string
+  finderNickname?: string
+  finderUsername?: string
   // 转账消息
   transferPayerUsername?: string    // 转账付款方 wxid
   transferReceiverUsername?: string // 转账收款方 wxid
