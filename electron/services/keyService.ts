@@ -146,10 +146,11 @@ export class KeyService {
       this.koffi = require('koffi')
       this.kernel32 = this.koffi.load('kernel32.dll')
 
-      this.OpenProcess = this.kernel32.func('OpenProcess', 'HANDLE', ['uint32', 'bool', 'uint32'])
-      this.CloseHandle = this.kernel32.func('CloseHandle', 'bool', ['HANDLE'])
-      this.TerminateProcess = this.kernel32.func('TerminateProcess', 'bool', ['HANDLE', 'uint32'])
-      this.QueryFullProcessImageNameW = this.kernel32.func('QueryFullProcessImageNameW', 'bool', ['HANDLE', 'uint32', this.koffi.out('uint16*'), this.koffi.out('uint32*')])
+      // 直接使用原生支持的 'void*' 替换 'HANDLE'，绝对不会再报类型错误
+      this.OpenProcess = this.kernel32.func('OpenProcess', 'void*', ['uint32', 'bool', 'uint32'])
+      this.CloseHandle = this.kernel32.func('CloseHandle', 'bool', ['void*'])
+      this.TerminateProcess = this.kernel32.func('TerminateProcess', 'bool', ['void*', 'uint32'])
+      this.QueryFullProcessImageNameW = this.kernel32.func('QueryFullProcessImageNameW', 'bool', ['void*', 'uint32', this.koffi.out('uint16*'), this.koffi.out('uint32*')])
 
       return true
     } catch (e) {
