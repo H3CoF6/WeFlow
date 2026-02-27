@@ -4,7 +4,6 @@ import { existsSync, readdirSync, readFileSync, statSync, copyFileSync, mkdirSyn
 import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import { Worker } from 'worker_threads'
-import crypto from 'crypto'
 import os from 'os'
 
 const execFileAsync = promisify(execFile)
@@ -936,7 +935,8 @@ export class KeyService {
           if (msg.type === 'progress') {
             totalScanned += msg.scanned
             const percent = ((totalScanned / totalCombinations) * 100).toFixed(1)
-            onProgress?.(`多核爆破中: 已尝试 ${(totalScanned / 10000).toFixed(0)} 万次 (${percent}%)`)
+            // 优化文案，并确保包含 (xx.x%) 供前端解析
+            onProgress?.(`多核爆破引擎运行中：已扫描 ${(totalScanned / 10000).toFixed(0)} 万个密钥空间 (${percent}%)`)
           } else if (msg.type === 'success' && !resolved) {
             resolved = true
             cleanup()
@@ -966,31 +966,28 @@ export class KeyService {
       manualDir?: string,
       onProgress?: (message: string) => void
   ): Promise<ImageKeyResult> {
-    onProgress?.('正在定位微信账号目录...')
+    onProgress?.('正在定位微信账号数据目录...')
     const accountDir = this.resolveAccountDir(manualDir)
     if (!accountDir) return { success: false, error: '未找到微信账号目录' }
 
-    // 精确提取 wxid，直接剥离 _f1c4 类似的 4 位十六进制校验码
     let wxid = basename(accountDir)
     wxid = wxid.replace(/_[0-9a-fA-F]{4}$/, '')
 
-    onProgress?.('正在收集模板文件...')
+    onProgress?.('正在收集并分析加密模板文件...')
     const templateFiles = this.findTemplateDatFiles(accountDir)
     if (!templateFiles.length) return { success: false, error: '未找到模板文件' }
 
-    onProgress?.('正在计算 XOR 密钥...')
+    onProgress?.('正在计算特征 XOR 密钥...')
     const xorKey = this.getXorKey(templateFiles)
     if (xorKey == null) return { success: false, error: '无法计算 XOR 密钥' }
 
-    onProgress?.('正在读取加密模板数据...')
+    onProgress?.('正在读取加密模板区块...')
     const ciphertexts = this.getCiphertextsFromTemplate(templateFiles)
     if (ciphertexts.length === 0) return { success: false, error: '无法读取加密模板数据' }
 
-    // 提示收集到的样本数量
-    onProgress?.(`提取到 ${ciphertexts.length} 个特征样本，开始进行交叉校验...`)
+    onProgress?.(`成功提取 ${ciphertexts.length} 个特征样本，准备交叉校验...`)
+    onProgress?.(`准备启动 ${os.cpus().length || 4} 线程并发爆破引擎 (基于 wxid: ${wxid})...`)
 
-    onProgress?.(`正在利用多核爆破 AES 密钥 (基于 wxid: ${wxid})...`)
-    // 注意这里传入的是 ciphertexts 数组
     const aesKey = await this.bruteForceAesKey(xorKey, wxid, ciphertexts, (msg) => {
       onProgress?.(msg)
     })
