@@ -1351,8 +1351,13 @@ function SettingsPage() {
         <button className="btn btn-secondary btn-sm" onClick={handleAutoGetImageKey} disabled={isFetchingImageKey}>
           <Plug size={14} /> {isFetchingImageKey ? '获取中...' : '自动获取图片密钥'}
         </button>
-        {imageKeyStatus && <div className="form-hint status-text">{imageKeyStatus}</div>}
-        {isFetchingImageKey && <div className="form-hint status-text">正在扫描内存，请稍候...</div>}
+        {isFetchingImageKey ? (
+            <div className="form-hint status-text" style={{ color: '#007bff', fontWeight: 'bold', marginTop: '6px' }}>
+              {imageKeyStatus || '正在启动多核爆破引擎...'}
+            </div>
+        ) : (
+            imageKeyStatus && <div className="form-hint status-text">{imageKeyStatus}</div>
+        )}
       </div>
 
       <div className="form-group">
